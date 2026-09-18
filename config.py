@@ -113,10 +113,10 @@ def _read_float_env(
 
 
 BOT_TOKEN = _read_env("BOT_TOKEN", required=True)
-DATABASE_URL = _read_env("DATABASE_URL", required=True)
+DATABASE_URL = _read_env("DATABASE_URL")
 ADMIN_ID = _read_int_env("ADMIN_ID", required=True, aliases=("admin_id",))
 CUSTOM_API_URL = _validate_custom_api_url(
-    _read_env("CUSTOM_API_URL", required=True, aliases=("custom_api_url",)) or "",
+    _read_env("CUSTOM_API_URL", aliases=("custom_api_url",)) or "https://api.telegram.org",
     "CUSTOM_API_URL",
 )
 MEASUREMENT_ID = _read_env("MEASUREMENT_ID")
