@@ -42,7 +42,8 @@ ENV TZ=UTC \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    PORT=8080
 
 WORKDIR /app
 
@@ -61,5 +62,7 @@ COPY . .
 RUN mkdir -p /app/downloads /app/logs /app/cookies && \
     chown -R appuser:appgroup /app
 
-ENTRYPOINT ["python", "container_entrypoint.py"]
+EXPOSE 8080
+
+ENTRYPOINT ["python", "back4app_entrypoint.py"]
 CMD ["python", "main.py"]
