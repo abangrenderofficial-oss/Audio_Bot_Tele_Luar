@@ -14,7 +14,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums.parse_mode import ParseMode
 from aiogram_dialog import setup_dialogs
-from sqlalchemy import insert as sql_insert
 
 from app_context import set_app_context
 from config import (
@@ -23,6 +22,7 @@ from config import (
     BOT_POLLING_TASKS_CONCURRENCY_LIMIT,
     BOT_SESSION_CONNECTION_LIMIT,
     BOT_TOKEN,
+    DATABASE_URL,
     CUSTOM_API_URL,
     MEASUREMENT_ID,
     OUTPUT_DIR,
@@ -30,7 +30,7 @@ from config import (
 from services.download.queue import shutdown_download_queue
 from services.logger import logger as logging
 from services.runtime.analytics_status import record_drop as record_analytics_drop
-from services.storage.db import AnalyticsEvent, DataBase
+from services.storage.memory_db import MemoryDataBase
 from utils.download_manager import close_download_http_clients
 from utils.http_client import close_http_session
 
@@ -61,14 +61,23 @@ class Application:
     session: AiohttpSession
     bot: Bot
     dispatcher: Dispatcher
-    db: DataBase
+    db: object
+
+
+def _build_storage():
+    if not DATABASE_URL:
+        return MemoryDataBase()
+
+    from services.storage.db import DataBase
+
+    return DataBase()
 
 
 def create_app(
     *,
     bot_token: str = BOT_TOKEN,
     api_url: str = CUSTOM_API_URL,
-    database_factory: Callable[[], DataBase] = DataBase,
+    database_factory: Callable[[], object] | None = None,
     session_timeout: int = 600,
     session_limit: int = BOT_SESSION_CONNECTION_LIMIT,
 ) -> Application:
@@ -80,7 +89,7 @@ def create_app(
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
     bot = Bot(token=bot_token, default=default, session=session)
     dispatcher = Dispatcher()
-    db = database_factory()
+    db = database_factory() if database_factory is not None else _build_storage()
     os.makedirs("downloads", exist_ok=True)
     return Application(
         session=session,
@@ -171,8 +180,11 @@ async def _send_to_google_analytics(payload: _AnalyticsPayload) -> None:
 
 
 async def _persist_analytics_batch(batch: list[_AnalyticsPayload]) -> None:
-    if not batch:
+    if not batch or not DATABASE_URL:
         return
+
+    from sqlalchemy import insert as sql_insert
+    from services.storage.db import AnalyticsEvent
 
     rows = [
         {"user_id": p.user_id, "chat_type": p.chat_type, "action_name": p.action_name}
@@ -343,9 +355,14 @@ async def main():
             logging.event("bot_startup", bot_username=bot_me.username)
             set_app_context(bot=bot, db=db, send_analytics=send_analytics)
             await db.init_db()
-            logging.info("[STARTUP] Database initialized successfully")
-            await start_analytics_workers()
-            analytics_started = True
+            logging.info(
+                "[STARTUP] Storage initialized: %s",
+                "PostgreSQL" if DATABASE_URL else "memory (no external database)",
+            )
+
+            if DATABASE_URL or (MEASUREMENT_ID and API_SECRET):
+                await start_analytics_workers()
+                analytics_started = True
 
             import handlers
             import middlewares
