@@ -254,6 +254,19 @@ def test_invidious_audio_streams_are_sorted_by_bitrate():
     ]
 
 
+def test_invidious_latest_version_url_uses_local_proxy():
+    url = music_download._invidious_latest_version_url(
+        "https://inv.example/",
+        "Ftffph3fVEs",
+        "251",
+    )
+
+    assert url.startswith("https://inv.example/latest_version?")
+    assert "id=Ftffph3fVEs" in url
+    assert "itag=251" in url
+    assert "local=true" in url
+
+
 def test_curl_proxy_promotes_socks5_to_remote_dns(monkeypatch):
     monkeypatch.setenv("YTDLP_YOUTUBE_PROXY", "socks5://127.0.0.1:1080")
     assert music_download._curl_proxy_url() == "socks5h://127.0.0.1:1080"
