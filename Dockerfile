@@ -107,6 +107,39 @@ sleep 2
 exec env DISPLAY=:99 python /app/potoken-generator.py --bind 0.0.0.0
 SH
 
+RUN python - <<'PY'
+from pathlib import Path
+p = Path('/app/potoken_generator/extractor.py')
+s = p.read_text()
+needle = "            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw')\n"
+replacement = """            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw')
+            try:
+                import re
+                page_html = await tab.get_content()
+                page_lower = page_html.lower()
+                markers = [
+                    marker for marker in (
+                        'before you continue',
+                        'consent.youtube.com',
+                        'sign in to confirm',
+                        'not a bot',
+                        'video unavailable',
+                        'unusual traffic',
+                        'movie_player',
+                    )
+                    if marker in page_lower
+                ]
+                text_preview = re.sub(r'<[^>]+>', ' ', page_html)
+                text_preview = re.sub(r'\\s+', ' ', text_preview).strip()[:600]
+                logger.warning(f'page diagnostics markers={markers} preview={text_preview}')
+            except Exception as diagnostic_error:
+                logger.warning(f'page diagnostics failed: {diagnostic_error}')
+"""
+if needle not in s:
+    raise SystemExit('official extractor.py page navigation layout changed')
+p.write_text(s.replace(needle, replacement, 1))
+PY
+
 RUN chmod +x /app/start-render-session.sh
 
 CMD ["/app/start-render-session.sh"]
