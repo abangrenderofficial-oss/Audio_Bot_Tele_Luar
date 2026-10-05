@@ -43,7 +43,10 @@ from services.media.audio_metadata import build_audio_filename, prepare_mp3_meta
 from services.media.delivery import send_audio_with_thumbnail
 from services.storage.music_cache import (
     get_cached_audio,
+    get_cached_social_audio,
+    social_media_key,
     store_cached_audio,
+    store_cached_social_audio,
     youtube_video_id,
 )
 from services.media.music_download import (
@@ -54,6 +57,7 @@ from services.media.music_download import (
     download_music_files,
     fetch_music_metadata,
     make_music_plan,
+    send_social_fast_to_telegram,
     send_youtube_fast_to_telegram,
 )
 
@@ -93,6 +97,42 @@ async def _release_fast_youtube_inflight(
     async with _FAST_YOUTUBE_INFLIGHT_LOCK:
         if _FAST_YOUTUBE_INFLIGHT.get(video_id) is future:
             _FAST_YOUTUBE_INFLIGHT.pop(video_id, None)
+
+
+_FAST_SOCIAL_INFLIGHT: dict[str, asyncio.Future[dict[str, object]]] = {}
+_FAST_SOCIAL_INFLIGHT_LOCK = asyncio.Lock()
+
+
+async def _claim_fast_social_inflight(
+    service_name: str,
+    source_url: str,
+) -> tuple[str | None, asyncio.Future[dict[str, object]] | None, bool]:
+    media_key = social_media_key(service_name, source_url)
+    if not media_key:
+        return None, None, True
+
+    inflight_key = f"{service_name}:{media_key}"
+    async with _FAST_SOCIAL_INFLIGHT_LOCK:
+        existing = _FAST_SOCIAL_INFLIGHT.get(inflight_key)
+        if existing is not None:
+            return inflight_key, existing, False
+
+        future: asyncio.Future[dict[str, object]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        _FAST_SOCIAL_INFLIGHT[inflight_key] = future
+        return inflight_key, future, True
+
+
+async def _release_fast_social_inflight(
+    inflight_key: str | None,
+    future: asyncio.Future[dict[str, object]] | None,
+) -> None:
+    if not inflight_key or future is None:
+        return
+    async with _FAST_SOCIAL_INFLIGHT_LOCK:
+        if _FAST_SOCIAL_INFLIGHT.get(inflight_key) is future:
+            _FAST_SOCIAL_INFLIGHT.pop(inflight_key, None)
 
 
 MUSIC_LINK_SERVICES = frozenset(
@@ -352,6 +392,67 @@ async def process_music_link(
                     )
                     return
 
+        if service_name in {"tiktok", "instagram", "threads", "twitter"}:
+            cache_started = time.perf_counter()
+            social_cached = await get_cached_social_audio(
+                service_name,
+                source_url,
+                variant="fast_original",
+            )
+            logging.info(
+                "Music timing: stage=social_global_cache_lookup "
+                "seconds=%.2f source=%s hit=%s",
+                time.perf_counter() - cache_started,
+                service_name,
+                bool(social_cached),
+            )
+            if social_cached:
+                cached_title = str(social_cached.get("title") or "Audio")
+                cached_performer = str(
+                    social_cached.get("performer") or service_name.title()
+                )
+                cached_duration = social_cached.get("duration_seconds")
+                try:
+                    await safe_edit_text(status_message, bm.uploading_status())
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    send_started = time.perf_counter()
+                    await send_audio_with_thumbnail(
+                        message.reply_audio,
+                        audio=str(social_cached["telegram_file_id"]),
+                        title=cached_title,
+                        performer=cached_performer,
+                        caption=(
+                            f"🎵 {html.escape(cached_title)}\nFast Audio"
+                        ),
+                        bot_url=bot_url,
+                        duration=cached_duration,
+                        parse_mode="HTML",
+                    )
+                    logging.info(
+                        "Music timing: stage=social_global_cache_send "
+                        "seconds=%.2f source=%s",
+                        time.perf_counter() - send_started,
+                        service_name,
+                    )
+                except Exception as cache_send_error:
+                    logging.warning(
+                        "Persistent social music cache file_id failed; "
+                        "continuing fresh path: %s",
+                        cache_send_error,
+                    )
+                else:
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+
         if service_name == "youtube":
             video_id, shared_fast_future, is_fast_leader = (
                 await _claim_fast_youtube_inflight(source_url)
@@ -509,6 +610,192 @@ async def process_music_link(
                     )
 
                 if fast_result is not None and fast_error is None:
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+
+        if service_name in {"tiktok", "instagram", "threads", "twitter"}:
+            inflight_key, shared_social_future, is_social_leader = (
+                await _claim_fast_social_inflight(service_name, source_url)
+            )
+
+            if not is_social_leader and shared_social_future is not None:
+                try:
+                    if status_message:
+                        await safe_edit_text(
+                            status_message,
+                            "🎧 Audio sama sedang diproses • guna hasil yang sama...",
+                        )
+                    shared_result = await asyncio.wait_for(
+                        asyncio.shield(shared_social_future),
+                        timeout=200.0,
+                    )
+                    if not shared_result.get("ok"):
+                        raise MusicDownloadError(
+                            str(
+                                shared_result.get("error")
+                                or "shared social fast path failed"
+                            )
+                        )
+
+                    shared_title = str(
+                        shared_result.get("title") or "Audio"
+                    )
+                    shared_performer = str(
+                        shared_result.get("performer")
+                        or service_name.title()
+                    )
+                    shared_duration = shared_result.get("duration")
+                    shared_quality = str(
+                        shared_result.get("quality_label") or "Fast Audio"
+                    )
+
+                    await safe_edit_text(status_message, bm.uploading_status())
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    send_started = time.perf_counter()
+                    await send_audio_with_thumbnail(
+                        message.reply_audio,
+                        audio=str(shared_result["file_id"]),
+                        title=shared_title,
+                        performer=shared_performer,
+                        caption=(
+                            f"🎵 {html.escape(shared_title)}\n"
+                            f"{html.escape(shared_quality)}"
+                        ),
+                        bot_url=bot_url,
+                        duration=shared_duration,
+                        parse_mode="HTML",
+                    )
+                    logging.info(
+                        "Music timing: stage=social_inflight_shared_send "
+                        "seconds=%.2f source=%s key=%s",
+                        time.perf_counter() - send_started,
+                        service_name,
+                        inflight_key,
+                    )
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+                except Exception as shared_error:
+                    logging.warning(
+                        "Shared social Fast Audio result failed; "
+                        "falling back to legacy MP3 pipeline: %s",
+                        shared_error,
+                    )
+
+            if is_social_leader:
+                social_result: dict[str, object] | None = None
+                social_error: Exception | None = None
+                try:
+                    if status_message:
+                        await safe_edit_text(
+                            status_message,
+                            (
+                                f"🎧 {service_name.title()} Fast Audio • "
+                                "sedang sediakan audio..."
+                            ),
+                        )
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    social_result = await send_social_fast_to_telegram(
+                        source_url,
+                        source=service_name,
+                        chat_id=message.chat.id,
+                        business_connection_id=business_id,
+                    )
+                except Exception as exc:
+                    social_error = exc
+                    logging.warning(
+                        "Social Fast Audio direct path failed; "
+                        "falling back to legacy MP3 pipeline: "
+                        "source=%s error=%s",
+                        service_name,
+                        exc,
+                    )
+                    if (
+                        shared_social_future is not None
+                        and not shared_social_future.done()
+                    ):
+                        shared_social_future.set_result(
+                            {"ok": False, "error": str(exc)}
+                        )
+                else:
+                    social_title = str(
+                        social_result.get("title") or "Audio"
+                    )
+                    social_performer = str(
+                        social_result.get("performer")
+                        or service_name.title()
+                    )
+                    social_duration = social_result.get("duration")
+                    social_quality = str(
+                        social_result.get("quality_label") or "Fast Audio"
+                    )
+
+                    if (
+                        shared_social_future is not None
+                        and not shared_social_future.done()
+                    ):
+                        shared_social_future.set_result(
+                            {
+                                "ok": True,
+                                "file_id": str(social_result["file_id"]),
+                                "file_size": social_result.get("file_size"),
+                                "title": social_title,
+                                "performer": social_performer,
+                                "duration": social_duration,
+                                "quality_label": social_quality,
+                            }
+                        )
+
+                    try:
+                        await store_cached_social_audio(
+                            service_name,
+                            source_url,
+                            telegram_file_id=str(social_result["file_id"]),
+                            variant="fast_original",
+                            title=social_title,
+                            performer=social_performer,
+                            duration_seconds=(
+                                float(social_duration)
+                                if social_duration is not None
+                                else None
+                            ),
+                            file_size_bytes=(
+                                int(social_result.get("file_size"))
+                                if social_result.get("file_size") is not None
+                                else None
+                            ),
+                        )
+                    except Exception as exc:
+                        logging.warning(
+                            "Persistent social music cache store failed: "
+                            "source=%s error=%s",
+                            service_name,
+                            exc,
+                        )
+                finally:
+                    await _release_fast_social_inflight(
+                        inflight_key,
+                        shared_social_future,
+                    )
+
+                if social_result is not None and social_error is None:
                     request_lease.mark_success()
                     await maybe_delete_user_message(
                         message,
