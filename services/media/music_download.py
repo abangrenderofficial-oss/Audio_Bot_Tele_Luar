@@ -1312,7 +1312,10 @@ def _youtube_worker_base_url() -> str:
 
 
 def _youtube_worker_auth_token() -> str:
-    return (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+    return (
+        (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+        or (os.getenv("BOT_TOKEN") or "").strip()
+    )
 
 
 def _youtube_worker_configured() -> bool:
