@@ -27,9 +27,9 @@ def resolve_downloaded_path(expected_path: str) -> str:
     raise DownloadError(f"yt-dlp output file missing: {expected_path}")
 
 
-def mp3_extract_postprocessors() -> list[dict[str, str]]:
+def mp3_extract_postprocessors(preferred_quality: str = "192") -> list[dict[str, str]]:
     return [{
         "key": "FFmpegExtractAudio",
         "preferredcodec": "mp3",
-        "preferredquality": "192",
+        "preferredquality": str(preferred_quality),
     }]
