@@ -1323,11 +1323,28 @@ def _youtube_worker_base_url() -> str:
 
 
 def _youtube_worker_auth_token() -> str:
-    return (
-        (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
-        or (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
-        or (os.getenv("BOT_TOKEN") or "").strip()
-    )
+    railway_key = (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
+    generic_key = (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+    bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+
+    # Safe auth diagnostics: only presence/length + short SHA-256 fingerprint.
+    # Never log the secret itself.
+    try:
+        import hashlib
+        def _fp(value: str) -> str:
+            return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else "-"
+        logging.info(
+            "[YOUTUBE-WORKER-AUTH] railway_present=%s railway_len=%s railway_fp=%s "
+            "generic_present=%s generic_len=%s generic_fp=%s "
+            "bot_present=%s bot_len=%s bot_fp=%s",
+            bool(railway_key), len(railway_key), _fp(railway_key),
+            bool(generic_key), len(generic_key), _fp(generic_key),
+            bool(bot_token), len(bot_token), _fp(bot_token),
+        )
+    except Exception:
+        pass
+
+    return railway_key or generic_key or bot_token
 
 
 def _youtube_worker_configured() -> bool:
