@@ -1,3 +1,5 @@
+import pytest
+
 import services.media.music_download as music_download
 
 from services.media.music_download import (
@@ -436,3 +438,74 @@ def test_low_memory_metadata_prefers_invidious_before_piped(monkeypatch):
         "https://youtu.be/Ftffph3fVEs",
         "youtube",
     ) == expected
+
+
+
+def test_cobalt_music_configured_requires_url_and_key(monkeypatch):
+    monkeypatch.delenv("COBALT_API_URL", raising=False)
+    monkeypatch.delenv("COBALT_API_KEY", raising=False)
+    assert music_download._cobalt_music_configured() is False
+
+    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
+    assert music_download._cobalt_music_configured() is False
+
+    monkeypatch.setenv("COBALT_API_KEY", "secret")
+    assert music_download._cobalt_music_configured() is True
+
+
+@pytest.mark.asyncio
+async def test_youtube_download_uses_cobalt_after_direct_chain_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
+    monkeypatch.setenv("COBALT_API_KEY", "secret")
+
+    def fail_direct(*_args, **_kwargs):
+        raise music_download.MusicDownloadError("youtube bot check")
+
+    calls = []
+
+    async def cobalt(url, out_template, bitrate_kbps):
+        calls.append((url, out_template, bitrate_kbps))
+        return str(tmp_path / "source.mp3")
+
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", fail_direct)
+    monkeypatch.setattr(music_download, "_run_cobalt_mp3", cobalt)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
+
+    result = await music_download._download_mp3(
+        "https://youtu.be/Ftffph3fVEs",
+        work_dir=str(tmp_path),
+        bitrate_kbps=192,
+        source="youtube",
+    )
+
+    assert result == str(tmp_path / "source.mp3")
+    assert calls == [
+        (
+            "https://youtu.be/Ftffph3fVEs",
+            str(tmp_path / "source.%(ext)s"),
+            192,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_youtube_download_preserves_direct_error_when_cobalt_not_configured(monkeypatch, tmp_path):
+    monkeypatch.delenv("COBALT_API_URL", raising=False)
+    monkeypatch.delenv("COBALT_API_KEY", raising=False)
+
+    def fail_direct(*_args, **_kwargs):
+        raise music_download.MusicDownloadError("youtube bot check")
+
+    async def should_not_run(*_args, **_kwargs):
+        raise AssertionError("Cobalt must not run without configuration")
+
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", fail_direct)
+    monkeypatch.setattr(music_download, "_run_cobalt_mp3", should_not_run)
+
+    with pytest.raises(music_download.MusicDownloadError, match="youtube bot check"):
+        await music_download._download_mp3(
+            "https://youtu.be/Ftffph3fVEs",
+            work_dir=str(tmp_path),
+            bitrate_kbps=192,
+            source="youtube",
+        )
