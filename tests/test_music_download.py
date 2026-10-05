@@ -579,3 +579,4 @@ async def test_cobalt_youtube_requests_session_token_mode(monkeypatch, tmp_path)
     assert result == str(tmp_path / "source.mp3")
     assert captured["payload"]["downloadMode"] == "audio"
     assert captured["payload"]["videoQuality"] == "max"
+    assert captured["payload"]["youtubeBetterAudio"] is True
