@@ -41,6 +41,7 @@ from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
 from services.media.delivery import send_audio_with_thumbnail
+from services.storage.music_cache import get_cached_audio, store_cached_audio
 from services.media.music_download import (
     MusicDownloadError,
     MusicDownloadResult,
@@ -245,6 +246,62 @@ async def process_music_link(
                 "🎧 Sedang baca audio dan metadata..."
             )
 
+        # Global persistent Telegram file_id cache. Do this before metadata so
+        # a popular YouTube song can be returned almost immediately without
+        # touching YouTube, Oregon, or FFmpeg at all.
+        if service_name == "youtube":
+            cache_started = time.perf_counter()
+            remote_cached = await get_cached_audio(
+                source_url,
+                variant="mp3_320",
+            )
+            logging.info(
+                "Music timing: stage=global_cache_lookup seconds=%.2f hit=%s",
+                time.perf_counter() - cache_started,
+                bool(remote_cached),
+            )
+            if remote_cached:
+                cached_title = str(remote_cached.get("title") or "Audio")
+                cached_performer = str(
+                    remote_cached.get("performer") or "YouTube"
+                )
+                cached_duration = remote_cached.get("duration_seconds")
+                try:
+                    await safe_edit_text(status_message, bm.uploading_status())
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    send_started = time.perf_counter()
+                    await send_audio_with_thumbnail(
+                        message.reply_audio,
+                        audio=str(remote_cached["telegram_file_id"]),
+                        title=cached_title,
+                        performer=cached_performer,
+                        caption=f"🎵 {html.escape(cached_title)}\n320 kbps",
+                        bot_url=bot_url,
+                        duration=cached_duration,
+                        parse_mode="HTML",
+                    )
+                    logging.info(
+                        "Music timing: stage=global_cache_send seconds=%.2f",
+                        time.perf_counter() - send_started,
+                    )
+                except Exception as cache_send_error:
+                    logging.warning(
+                        "Persistent music cache file_id failed; continuing fresh path: %s",
+                        cache_send_error,
+                    )
+                else:
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+
         stage_started = time.perf_counter()
         metadata = await fetch_music_metadata(
             source_url,
@@ -442,6 +499,37 @@ async def process_music_link(
                     summarize_url_for_log(source_url),
                     exc,
                 )
+
+            # Persist normal 320 kbps YouTube singles globally so future users
+            # can receive the Telegram file_id without another download.
+            if (
+                service_name == "youtube"
+                and total_parts == 1
+                and result.bitrate_kbps == 320
+            ):
+                try:
+                    stored = await store_cached_audio(
+                        source_url,
+                        telegram_file_id=sent_file_id,
+                        variant="mp3_320",
+                        title=metadata.title,
+                        performer=metadata.performer,
+                        duration_seconds=metadata.duration,
+                        file_size_bytes=(
+                            os.path.getsize(result.paths[0])
+                            if result.paths and os.path.isfile(result.paths[0])
+                            else None
+                        ),
+                    )
+                    logging.info(
+                        "Persistent music cache store: success=%s",
+                        stored,
+                    )
+                except Exception as exc:
+                    logging.warning(
+                        "Persistent music cache store failed: %s",
+                        exc,
+                    )
 
         request_lease.mark_success()
         await maybe_delete_user_message(
