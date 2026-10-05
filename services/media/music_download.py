@@ -1403,9 +1403,9 @@ async def send_youtube_fast_to_telegram(
     url: str,
     *,
     chat_id: int,
-    title: str,
-    performer: str,
-    duration: float | None,
+    title: str | None = None,
+    performer: str | None = None,
+    duration: float | None = None,
     business_connection_id: str | None = None,
 ) -> dict[str, Any]:
     base_url = _youtube_worker_base_url()
@@ -1419,10 +1419,13 @@ async def send_youtube_fast_to_telegram(
         "cookies": _youtube_worker_cookie_text(),
         "telegram_bot_token": bot_token,
         "chat_id": int(chat_id),
-        "title": title,
-        "performer": performer,
-        "duration": duration,
     }
+    if title:
+        payload["title"] = title
+    if performer:
+        payload["performer"] = performer
+    if duration is not None and float(duration) > 0:
+        payload["duration"] = float(duration)
     if business_connection_id:
         payload["business_connection_id"] = business_connection_id
 
