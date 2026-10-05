@@ -23,11 +23,12 @@ BITRATE_CHOICES_KBPS = (320, 256, 224, 192, 160, 128)
 MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
-YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["web_safari", "web_embedded", "tv"],
-    },
-}
+YOUTUBE_PUBLIC_FALLBACK_CLIENTS = (
+    "android_vr",
+    "tv_simply",
+    "web_embedded",
+    "web_safari",
+)
 
 _SOURCE_LABELS = {
     "youtube": "YouTube",
@@ -184,10 +185,14 @@ def make_music_plan(duration_seconds: float | int | None) -> MusicPlan:
     return MusicPlan(mode="single", bitrate_kbps=bitrate)
 
 
-def _extract_info_once(url: str, *, youtube_public_fallback: bool = False) -> dict[str, Any]:
+def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
-    if youtube_public_fallback:
-        overrides["extractor_args"] = YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS
+    if youtube_client:
+        overrides["extractor_args"] = {
+            "youtube": {
+                "player_client": [youtube_client],
+            },
+        }
     options = build_ytdlp_youtube_options(
         skip_download=True,
         ignore_no_formats_error=True,
@@ -214,14 +219,25 @@ def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
             "Primary YouTube metadata extraction failed; trying public clients: error=%s",
             first_error,
         )
-        try:
-            return _extract_info_once(url, youtube_public_fallback=True)
-        except MusicDownloadError:
-            raise
-        except Exception as fallback_error:
-            raise MusicDownloadError(
-                f"{first_error}\n--- YouTube public fallback ---\n{fallback_error}"
-            ) from fallback_error
+        errors = [f"primary: {first_error}"]
+        last_error: Exception = first_error
+        for client in YOUTUBE_PUBLIC_FALLBACK_CLIENTS:
+            try:
+                logging.info("Trying YouTube metadata client: %s", client)
+                return _extract_info_once(url, youtube_client=client)
+            except MusicDownloadError:
+                raise
+            except Exception as fallback_error:
+                last_error = fallback_error
+                errors.append(f"{client}: {fallback_error}")
+                logging.warning(
+                    "YouTube metadata client failed: client=%s error=%s",
+                    client,
+                    fallback_error,
+                )
+        raise MusicDownloadError(
+            "\n--- YouTube client retries ---\n" + "\n".join(errors)
+        ) from last_error
 
 
 async def fetch_music_metadata(
@@ -251,11 +267,15 @@ def _run_ytdlp_mp3_once(
     out_template: str,
     bitrate_kbps: int,
     *,
-    youtube_public_fallback: bool = False,
+    youtube_client: str | None = None,
 ) -> str:
     overrides: dict[str, Any] = {}
-    if youtube_public_fallback:
-        overrides["extractor_args"] = YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS
+    if youtube_client:
+        overrides["extractor_args"] = {
+            "youtube": {
+                "player_client": [youtube_client],
+            },
+        }
     options = build_ytdlp_youtube_options(
         format="bestaudio/best",
         outtmpl=out_template,
@@ -294,20 +314,31 @@ def _run_ytdlp_mp3_sync(
             "Primary YouTube audio download failed; trying public clients: error=%s",
             first_error,
         )
-        _clear_ytdlp_outputs(out_template)
-        try:
-            return _run_ytdlp_mp3_once(
-                url,
-                out_template,
-                bitrate_kbps,
-                youtube_public_fallback=True,
-            )
-        except MusicDownloadError:
-            raise
-        except Exception as fallback_error:
-            raise MusicDownloadError(
-                f"{first_error}\n--- YouTube public fallback ---\n{fallback_error}"
-            ) from fallback_error
+        errors = [f"primary: {first_error}"]
+        last_error: Exception = first_error
+        for client in YOUTUBE_PUBLIC_FALLBACK_CLIENTS:
+            _clear_ytdlp_outputs(out_template)
+            try:
+                logging.info("Trying YouTube audio client: %s", client)
+                return _run_ytdlp_mp3_once(
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                    youtube_client=client,
+                )
+            except MusicDownloadError:
+                raise
+            except Exception as fallback_error:
+                last_error = fallback_error
+                errors.append(f"{client}: {fallback_error}")
+                logging.warning(
+                    "YouTube audio client failed: client=%s error=%s",
+                    client,
+                    fallback_error,
+                )
+        raise MusicDownloadError(
+            "\n--- YouTube client retries ---\n" + "\n".join(errors)
+        ) from last_error
 
 
 async def _download_mp3(
