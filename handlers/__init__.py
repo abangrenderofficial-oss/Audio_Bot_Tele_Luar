@@ -2,6 +2,7 @@ from aiogram import Router
 
 from . import (
     user,
+    music,
     tiktok,
     youtube,
     spotify,
@@ -20,6 +21,7 @@ router = Router(name=__name__)
 router.include_routers(
     user.router,
     guest.router,
+    music.router,
     tiktok.router,
     youtube.router,
     spotify.router,
