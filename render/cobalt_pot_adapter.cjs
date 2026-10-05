@@ -350,43 +350,77 @@ async function startWarp() {
   }
 }
 
+const WEB_EMBEDDED_CONTEXT = {
+  client: {
+    clientName: "WEB_EMBEDDED_PLAYER",
+    clientVersion: "2.20260708.00.00",
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)",
+    hl: "en",
+    timeZone: "UTC",
+    utcOffsetMinutes: 0,
+  },
+};
+
+async function requestProvider(body) {
+  const response = await fetch(PROVIDER_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok || !data?.poToken || !data?.contentBinding) {
+    throw new Error(
+      data?.error ||
+      data?.message ||
+      `provider status ${response.status}`
+    );
+  }
+
+  return data;
+}
+
 async function fetchSession() {
   let lastError = "provider unavailable";
+  const proxy = WARP_ENABLED
+    ? `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}`
+    : undefined;
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
-      const providerBody = WARP_ENABLED
-        ? JSON.stringify({ proxy: `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}` })
-        : "{}";
-
-      const response = await fetch(PROVIDER_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: providerBody,
+      const seed = await requestProvider({
+        ...(proxy ? { proxy } : {}),
       });
-      const text = await response.text();
-      let data;
 
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = null;
-      }
+      const embedded = await requestProvider({
+        content_binding: seed.contentBinding,
+        bypass_cache: true,
+        ...(proxy ? { proxy } : {}),
+        innertube_context: {
+          client: {
+            ...WEB_EMBEDDED_CONTEXT.client,
+            visitorData: seed.contentBinding,
+          },
+        },
+      });
 
-      if (response.ok && data?.poToken && data?.contentBinding) {
-        return text;
-      }
-
-      lastError =
-        data?.error ||
-        data?.message ||
-        `provider status ${response.status}`;
-
-      console.error(
-        `[POT-ADAPTER] provider failed: status=${response.status} error=${String(lastError).slice(0, 500)}`
+      console.log(
+        `[POT-ADAPTER] minted WEB_EMBEDDED session via ${proxy ? "WARP" : "direct"} egress`
       );
+      return JSON.stringify(embedded);
     } catch (error) {
       lastError = error?.message || String(error);
+      console.error(
+        `[POT-ADAPTER] provider failed: error=${String(lastError).slice(0, 500)}`
+      );
     }
 
     if (attempt < ATTEMPTS) {
