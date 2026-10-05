@@ -13,6 +13,9 @@ from config import OUTPUT_DIR
 from handlers.commands import update_info
 from handlers.request_dedupe import claim_message_request
 from handlers.utils import (
+    build_queue_busy_text,
+    build_queue_status,
+    build_rate_limit_text,
     get_bot_avatar_thumbnail,
     get_bot_url,
     get_message_text,
@@ -23,6 +26,11 @@ from handlers.utils import (
     safe_edit_text,
     send_chat_action_if_needed,
     should_skip_duplicate_business_message,
+)
+from services.download.queue import (
+    QueueBackpressureError,
+    QueueRateLimitError,
+    get_download_queue,
 )
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
@@ -216,11 +224,26 @@ async def process_music_link(
             f"{message.chat.id}-{message.message_id}-"
             f"{message.from_user.id if message.from_user else 0}"
         )
-        result = await download_music_files(
-            source_url,
-            metadata=metadata,
-            output_dir=OUTPUT_DIR,
-            job_id=job_id,
+        async def _on_queued(ticket) -> None:
+            if status_message:
+                await safe_edit_text(
+                    status_message,
+                    build_queue_status("MP3 conversion", ticket),
+                )
+
+        result = await get_download_queue().submit(
+            lambda: download_music_files(
+                source_url,
+                metadata=metadata,
+                output_dir=OUTPUT_DIR,
+                job_id=job_id,
+            ),
+            priority=30,
+            source=f"{service_name}_audio",
+            user_id=message.from_user.id if message.from_user else None,
+            chat_id=message.chat.id,
+            request_id=job_id,
+            on_queued=_on_queued,
         )
 
         await safe_edit_text(status_message, bm.uploading_status())
@@ -309,6 +332,20 @@ async def process_music_link(
             user_settings.get("delete_message"),
         )
 
+    except QueueRateLimitError as exc:
+        logging.info(
+            "Music Bot rate limit: user_id=%s retry_after=%.1f",
+            message.from_user.id if message.from_user else None,
+            exc.retry_after,
+        )
+        await message.reply(build_rate_limit_text(exc.retry_after))
+    except QueueBackpressureError as exc:
+        logging.info(
+            "Music Bot queue busy: user_id=%s position=%s",
+            message.from_user.id if message.from_user else None,
+            exc.position,
+        )
+        await message.reply(build_queue_busy_text(exc.position))
     except asyncio.TimeoutError:
         logging.warning(
             "Music metadata timed out: service=%s url=%s",
