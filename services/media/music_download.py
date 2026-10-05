@@ -31,8 +31,6 @@ _SOURCE_LABELS = {
     "threads": "Threads",
     "twitter": "X / Twitter",
 }
-_GENERIC_PERFORMERS = frozenset(_SOURCE_LABELS.values())
-
 
 @dataclass(frozen=True, slots=True)
 class MusicMetadata:
@@ -119,16 +117,7 @@ def build_music_metadata(
 
         title = track or f"Original sound — {_social_creator_label(info, performer or source_label)}"
         title = _clean_text(title, "Original sound")
-        title_lower = title.lower()
-        performer_lower = performer.lower()
-        if (
-            performer not in _GENERIC_PERFORMERS
-            and performer_lower
-            and performer_lower not in title_lower
-        ):
-            file_base = safe_file_stem(f"{performer} - {title}", "Original sound")
-        else:
-            file_base = safe_file_stem(title, "Original sound")
+        file_base = safe_file_stem(title, "Original sound")
 
     raw_duration = info.get("duration")
     try:
@@ -335,34 +324,38 @@ async def download_music_files(
     work_dir = os.path.join(output_dir, f"music-{clean_job_id}")
     await asyncio.to_thread(os.makedirs, work_dir, exist_ok=True)
 
-    plan = make_music_plan(metadata.duration)
-    source_path = await _download_mp3(
-        url,
-        work_dir=work_dir,
-        bitrate_kbps=plan.bitrate_kbps,
-    )
-    source_size = os.path.getsize(source_path)
+    try:
+        plan = make_music_plan(metadata.duration)
+        source_path = await _download_mp3(
+            url,
+            work_dir=work_dir,
+            bitrate_kbps=plan.bitrate_kbps,
+        )
+        source_size = os.path.getsize(source_path)
 
-    if plan.mode == "single" and source_size <= MAX_AUDIO_BYTES:
+        if plan.mode == "single" and source_size <= MAX_AUDIO_BYTES:
+            return MusicDownloadResult(
+                work_dir=work_dir,
+                paths=[source_path],
+                bitrate_kbps=plan.bitrate_kbps,
+                mode="single",
+            )
+
+        split_source = source_path
+        if plan.bitrate_kbps != SPLIT_BITRATE_KBPS:
+            split_source = os.path.join(work_dir, "split-source-128.mp3")
+            await _transcode_to_128k(source_path, split_source)
+
+        parts = await _split_mp3(split_source, work_dir)
         return MusicDownloadResult(
             work_dir=work_dir,
-            paths=[source_path],
-            bitrate_kbps=plan.bitrate_kbps,
-            mode="single",
+            paths=parts,
+            bitrate_kbps=SPLIT_BITRATE_KBPS,
+            mode="split",
         )
-
-    split_source = source_path
-    if plan.bitrate_kbps != SPLIT_BITRATE_KBPS:
-        split_source = os.path.join(work_dir, "split-source-128.mp3")
-        await _transcode_to_128k(source_path, split_source)
-
-    parts = await _split_mp3(split_source, work_dir)
-    return MusicDownloadResult(
-        work_dir=work_dir,
-        paths=parts,
-        bitrate_kbps=SPLIT_BITRATE_KBPS,
-        mode="split",
-    )
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, work_dir, True)
+        raise
 
 
 async def cleanup_music_result(result: MusicDownloadResult | None) -> None:
