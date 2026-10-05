@@ -379,7 +379,12 @@ async function fetchSession() {
 
       lastError =
         data?.error ||
+        data?.message ||
         `provider status ${response.status}`;
+
+      console.error(
+        `[POT-ADAPTER] provider failed: status=${response.status} error=${String(lastError).slice(0, 500)}`
+      );
     } catch (error) {
       lastError = error?.message || String(error);
     }
