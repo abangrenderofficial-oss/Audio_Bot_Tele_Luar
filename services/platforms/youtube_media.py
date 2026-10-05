@@ -99,6 +99,10 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
         options["quiet"] = False
         options["no_warnings"] = False
 
+    youtube_proxy = (os.getenv("YTDLP_YOUTUBE_PROXY") or "").strip()
+    if youtube_proxy:
+        options["proxy"] = youtube_proxy
+
     sleep_requests = _read_float_env("YTDLP_YOUTUBE_SLEEP_REQUESTS_SECONDS")
     if sleep_requests is not None:
         options["sleep_interval_requests"] = sleep_requests
