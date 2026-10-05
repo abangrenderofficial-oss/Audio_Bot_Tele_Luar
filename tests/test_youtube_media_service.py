@@ -114,6 +114,15 @@ def test_search_youtube_track_resolves_first_result(tmp_path):
     assert calls[0]["playlistend"] == 1
 
 
+def test_build_ytdlp_youtube_options_uses_explicit_youtube_user_agent(monkeypatch):
+    user_agent = "Mozilla/5.0 Test Browser"
+    monkeypatch.setenv("YTDLP_YOUTUBE_USER_AGENT", user_agent)
+
+    options = build_ytdlp_youtube_options(skip_download=True)
+
+    assert options["http_headers"]["User-Agent"] == user_agent
+
+
 def test_build_ytdlp_youtube_options_includes_optional_access_env(monkeypatch, tmp_path):
     cookies_file = tmp_path / "cookies.txt"
     cookies_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
