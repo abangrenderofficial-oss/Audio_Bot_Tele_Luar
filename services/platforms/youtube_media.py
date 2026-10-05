@@ -189,7 +189,10 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     wpc_browser_path = (
         os.getenv("YTDLP_YOUTUBE_WPC_BROWSER_PATH") or "/usr/bin/chromium"
     ).strip()
-    wpc_available = bool(wpc_browser_path and os.path.isfile(wpc_browser_path))
+    wpc_available = (
+        _env_truthy("YOUTUBE_BROWSER_WPC_ENABLED")
+        and bool(wpc_browser_path and os.path.isfile(wpc_browser_path))
+    )
     if wpc_available:
         extractor_args.setdefault("youtubepot-wpc", {})["browser_path"] = [
             wpc_browser_path
