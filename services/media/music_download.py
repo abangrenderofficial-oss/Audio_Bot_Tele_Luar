@@ -1285,6 +1285,139 @@ def _run_ytdlp_mp3_sync(
         ) from last_error
 
 
+def _youtube_worker_configured() -> bool:
+    return bool(
+        (os.getenv("YOUTUBE_WORKER_URL") or "").strip()
+        and (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+    )
+
+
+def _youtube_worker_cookie_text() -> str:
+    candidates = [
+        (os.getenv("YTDLP_YOUTUBE_COOKIES_FILE") or "").strip(),
+        "/tmp/abangrender-youtube.txt",
+        "/etc/secrets/youtube.txt",
+        os.path.join("cookies", "youtube.txt"),
+    ]
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8", errors="replace") as handle:
+                value = handle.read()
+            if value.strip():
+                return value
+        except OSError:
+            continue
+    raise MusicDownloadError("YouTube worker cookies are unavailable")
+
+
+def _run_youtube_worker_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    base_url = (os.getenv("YOUTUBE_WORKER_URL") or "").strip().rstrip("/")
+    api_key = (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+    if not base_url or not api_key:
+        raise MusicDownloadError("Isolated YouTube worker is not configured")
+
+    cookies_text = _youtube_worker_cookie_text()
+    base_path = out_template.replace(".%(ext)s", "")
+    raw_path = f"{base_path}.youtube-worker-source"
+    expected = f"{base_path}.mp3"
+    total = 0
+
+    try:
+        logging.info("Trying isolated WARP YouTube audio worker")
+        with httpx.Client(
+            timeout=httpx.Timeout(150.0, connect=20.0),
+            follow_redirects=True,
+        ) as client:
+            with client.stream(
+                "POST",
+                f"{base_url}/audio",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "audio/*,application/octet-stream",
+                    "User-Agent": "AbangRender-MusicBot/1.0",
+                },
+                json={"url": url, "cookies": cookies_text},
+            ) as response:
+                if response.status_code != 200:
+                    error_body = response.read().decode("utf-8", errors="replace")
+                    raise MusicDownloadError(
+                        f"YouTube worker returned HTTP {response.status_code}: "
+                        f"{error_body[-1000:]}"
+                    )
+
+                content_type = (response.headers.get("content-type") or "").lower()
+                if content_type.startswith("text/") or "json" in content_type:
+                    raise MusicDownloadError(
+                        "YouTube worker returned non-media content: "
+                        f"{content_type or 'unknown'}"
+                    )
+
+                with open(raw_path, "wb") as handle:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > 150 * 1024 * 1024:
+                            raise MusicDownloadError(
+                                "YouTube worker audio exceeded safety limit"
+                            )
+                        handle.write(chunk)
+
+        if total <= 0:
+            raise MusicDownloadError("YouTube worker returned empty audio")
+
+        process = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                raw_path,
+                "-map",
+                "0:a:0?",
+                "-vn",
+                "-ac",
+                "2",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                f"{int(bitrate_kbps)}k",
+                expected,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        if process.returncode != 0 or not os.path.isfile(expected):
+            error_text = (process.stderr or "").strip()
+            raise MusicDownloadError(
+                "YouTube worker ffmpeg conversion failed"
+                + (f": {error_text[-500:]}" if error_text else "")
+            )
+
+        logging.info(
+            "Isolated WARP YouTube audio worker succeeded: source_bytes=%s",
+            total,
+        )
+        return expected
+    finally:
+        try:
+            os.remove(raw_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 def _cobalt_music_configured() -> bool:
     return bool(
         (os.getenv("COBALT_API_URL") or "").strip()
@@ -1449,41 +1582,27 @@ async def _download_mp3(
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
     if source == "youtube":
-        relay_errors: list[str] = []
+        worker_error: Exception | None = None
 
-        if _configured_invidious_api_urls():
+        if _youtube_worker_configured():
             try:
-                logging.info("Trying Invidious relay as YouTube Music primary path")
                 return await asyncio.to_thread(
-                    _run_invidious_mp3_sync,
+                    _run_youtube_worker_mp3_sync,
                     url,
                     out_template,
                     bitrate_kbps,
                 )
             except Exception as exc:
-                relay_errors.append(f"Invidious: {exc}")
+                worker_error = exc
                 logging.warning(
-                    "Invidious YouTube Music primary path failed: error=%s",
+                    "Isolated WARP YouTube worker failed; trying Guest WPC fallback: error=%s",
                     exc,
                 )
                 _clear_ytdlp_outputs(out_template)
-
-        if _configured_piped_api_urls():
-            try:
-                logging.info("Trying Piped relay as YouTube Music primary path")
-                return await asyncio.to_thread(
-                    _run_piped_mp3_sync,
-                    url,
-                    out_template,
-                    bitrate_kbps,
-                )
-            except Exception as exc:
-                relay_errors.append(f"Piped: {exc}")
-                logging.warning(
-                    "Piped YouTube Music primary path failed: error=%s",
-                    exc,
-                )
-                _clear_ytdlp_outputs(out_template)
+        else:
+            logging.warning(
+                "Isolated YouTube worker is not configured; using Guest WPC fallback"
+            )
 
         guest_error: Exception | None = None
         try:
@@ -1496,40 +1615,25 @@ async def _download_mp3(
         except Exception as exc:
             guest_error = exc
             logging.warning(
-                "Guest WPC YouTube Music fallback failed: error=%s",
+                "Guest WPC YouTube Music fallback failed; using direct chain: error=%s",
                 exc,
             )
             _clear_ytdlp_outputs(out_template)
 
-        if _cobalt_music_configured():
-            try:
-                return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
-            except Exception as cobalt_error:
-                logging.warning(
-                    "Cobalt YouTube Music fallback failed; using final direct chain: error=%s",
-                    cobalt_error,
-                )
-                _clear_ytdlp_outputs(out_template)
-                try:
-                    return await asyncio.to_thread(
-                        _run_ytdlp_mp3_sync,
-                        url,
-                        out_template,
-                        bitrate_kbps,
-                        source,
-                    )
-                except MusicDownloadError as direct_error:
-                    relay_text = "\n".join(relay_errors) or "No relay configured"
-                    raise MusicDownloadError(
-                        f"Relay paths:\n{relay_text}\n"
-                        f"--- Guest WPC fallback ---\n{guest_error}\n"
-                        f"--- Cobalt fallback ---\n{cobalt_error}\n"
-                        f"--- Direct fallback ---\n{direct_error}"
-                    ) from direct_error
-
-        logging.warning(
-            "Cobalt fallback unavailable after relay/WPC failure: COBALT_API_URL/COBALT_API_KEY not configured"
-        )
+        try:
+            return await asyncio.to_thread(
+                _run_ytdlp_mp3_sync,
+                url,
+                out_template,
+                bitrate_kbps,
+                source,
+            )
+        except MusicDownloadError as direct_error:
+            raise MusicDownloadError(
+                f"Isolated worker: {worker_error}\n"
+                f"--- Guest WPC fallback ---\n{guest_error}\n"
+                f"--- Direct fallback ---\n{direct_error}"
+            ) from direct_error
 
     return await asyncio.to_thread(
         _run_ytdlp_mp3_sync,
