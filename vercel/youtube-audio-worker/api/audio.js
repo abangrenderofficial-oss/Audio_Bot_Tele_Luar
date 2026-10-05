@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 // External worker deployment marker: keep YouTube extraction off Render egress.
+// Auth rotation redeploy marker: external worker key refreshed.
 import { once } from "node:events";
 import { Innertube, UniversalCache } from "youtubei.js";
 
