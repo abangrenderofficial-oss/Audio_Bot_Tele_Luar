@@ -1399,6 +1399,74 @@ def _youtube_worker_cookie_text() -> str:
     return ""
 
 
+async def send_youtube_fast_to_telegram(
+    url: str,
+    *,
+    chat_id: int,
+    title: str,
+    performer: str,
+    duration: float | None,
+    business_connection_id: str | None = None,
+) -> dict[str, Any]:
+    base_url = _youtube_worker_base_url()
+    api_key = _youtube_worker_auth_token()
+    bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+    if not base_url or not api_key or not bot_token:
+        raise MusicDownloadError("Fast YouTube Telegram worker is not configured")
+
+    payload: dict[str, Any] = {
+        "url": url,
+        "cookies": _youtube_worker_cookie_text(),
+        "telegram_bot_token": bot_token,
+        "chat_id": int(chat_id),
+        "title": title,
+        "performer": performer,
+        "duration": duration,
+    }
+    if business_connection_id:
+        payload["business_connection_id"] = business_connection_id
+
+    started = time.perf_counter()
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(180.0, connect=20.0),
+        follow_redirects=True,
+    ) as client:
+        response = await client.post(
+            f"{base_url}/telegram-audio",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "User-Agent": "AbangRender-MusicBot/1.0",
+            },
+            json=payload,
+        )
+
+    if response.status_code != 200:
+        detail = response.text[-1000:]
+        raise MusicDownloadError(
+            f"Fast YouTube Telegram worker returned HTTP {response.status_code}: {detail}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise MusicDownloadError(
+            "Fast YouTube Telegram worker returned invalid JSON"
+        ) from exc
+
+    if not isinstance(data, dict) or not data.get("ok") or not data.get("file_id"):
+        raise MusicDownloadError(
+            f"Fast YouTube Telegram worker returned incomplete result: {str(data)[-800:]}"
+        )
+
+    logging.info(
+        "YouTube fast direct Telegram succeeded: seconds=%.2f file_size=%s",
+        time.perf_counter() - started,
+        data.get("file_size"),
+    )
+    return data
+
+
 def _run_youtube_worker_stream_mp3_sync(
     url: str,
     out_template: str,
