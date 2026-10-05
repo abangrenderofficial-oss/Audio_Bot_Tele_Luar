@@ -328,6 +328,7 @@ def _run_ytdlp_mp3_once(
     *,
     youtube_client: str | None = None,
     format_spec: str = "bestaudio/best",
+    use_cookies: bool = True,
 ) -> str:
     overrides: dict[str, Any] = {}
     if youtube_client:
@@ -342,6 +343,12 @@ def _run_ytdlp_mp3_once(
         fragment_retries=1,
         **overrides,
     )
+    if not use_cookies:
+        # Guest WPC mode deliberately avoids stale/account-bound cookies.
+        # The WPC provider mints guest PO tokens in Chromium over the same
+        # YTDLP_YOUTUBE_PROXY/WARP egress used by yt-dlp.
+        options.pop("cookiefile", None)
+        options.pop("cookiesfrombrowser", None)
     with YoutubeDL(options) as ydl:
         ydl.download([url])
 
@@ -1369,6 +1376,22 @@ def _convert_cobalt_audio_source_sync(
             pass
 
 
+def _run_guest_wpc_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    logging.info("Trying guest WPC YouTube Music primary path")
+    return _run_ytdlp_mp3_once(
+        url,
+        out_template,
+        bitrate_kbps,
+        youtube_client="mweb",
+        format_spec="bestaudio/best",
+        use_cookies=False,
+    )
+
+
 async def _run_cobalt_mp3(
     url: str,
     out_template: str,
@@ -1425,31 +1448,49 @@ async def _download_mp3(
 ) -> str:
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
-    if source == "youtube" and _cobalt_music_configured():
+    if source == "youtube":
+        guest_error: Exception | None = None
         try:
-            return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
-        except Exception as cobalt_error:
+            return await asyncio.to_thread(
+                _run_guest_wpc_mp3_sync,
+                url,
+                out_template,
+                bitrate_kbps,
+            )
+        except Exception as exc:
+            guest_error = exc
             logging.warning(
-                "Cobalt YouTube Music primary path failed; falling back to direct chain: error=%s",
-                cobalt_error,
+                "Guest WPC YouTube Music primary path failed: error=%s",
+                exc,
             )
             _clear_ytdlp_outputs(out_template)
-            try:
-                return await asyncio.to_thread(
-                    _run_ytdlp_mp3_sync,
-                    url,
-                    out_template,
-                    bitrate_kbps,
-                    source,
-                )
-            except MusicDownloadError as direct_error:
-                raise MusicDownloadError(
-                    f"Cobalt primary: {cobalt_error}\n--- Direct fallback ---\n{direct_error}"
-                ) from direct_error
 
-    if source == "youtube":
+        if _cobalt_music_configured():
+            try:
+                return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
+            except Exception as cobalt_error:
+                logging.warning(
+                    "Cobalt YouTube Music fallback failed; using direct chain: error=%s",
+                    cobalt_error,
+                )
+                _clear_ytdlp_outputs(out_template)
+                try:
+                    return await asyncio.to_thread(
+                        _run_ytdlp_mp3_sync,
+                        url,
+                        out_template,
+                        bitrate_kbps,
+                        source,
+                    )
+                except MusicDownloadError as direct_error:
+                    raise MusicDownloadError(
+                        f"Guest WPC primary: {guest_error}\n"
+                        f"--- Cobalt fallback ---\n{cobalt_error}\n"
+                        f"--- Direct fallback ---\n{direct_error}"
+                    ) from direct_error
+
         logging.warning(
-            "Cobalt YouTube Music primary path unavailable: COBALT_API_URL/COBALT_API_KEY not configured"
+            "Cobalt fallback unavailable after Guest WPC failure: COBALT_API_URL/COBALT_API_KEY not configured"
         )
 
     return await asyncio.to_thread(
