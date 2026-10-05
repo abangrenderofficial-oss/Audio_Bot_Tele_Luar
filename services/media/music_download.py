@@ -5,10 +5,13 @@ import glob
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 from yt_dlp import YoutubeDL
 
 from services.logger import logger as logging
@@ -23,6 +26,7 @@ BITRATE_CHOICES_KBPS = (320, 256, 224, 192, 160, 128)
 MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
+PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
     ("android_vr", "18/bestaudio/best"),
     ("web_embedded", "bestaudio/best"),
@@ -297,6 +301,201 @@ def _run_ytdlp_mp3_once(
     raise MusicDownloadError(f"MP3 output file missing: {base_path}")
 
 
+
+def _configured_piped_api_urls() -> list[str]:
+    raw = (os.getenv("PIPED_API_URLS") or "").strip()
+    if not raw:
+        return []
+    return [
+        item.strip().rstrip("/")
+        for item in re.split(r"[,;\\s]+", raw)
+        if item.strip()
+    ]
+
+
+def _youtube_video_id(url: str) -> str | None:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    host = (parsed.hostname or "").lower()
+    if host in {"youtu.be", "www.youtu.be"}:
+        candidate = parsed.path.strip("/").split("/", 1)[0]
+        return candidate if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate) else None
+
+    if host.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            candidate = (parse_qs(parsed.query).get("v") or [""])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            candidate = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"} else ""
+        return candidate if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate) else None
+    return None
+
+
+def _pick_piped_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+    streams = data.get("audioStreams")
+    if not isinstance(streams, list):
+        return None
+    candidates = [
+        item
+        for item in streams
+        if isinstance(item, dict)
+        and isinstance(item.get("url"), str)
+        and str(item.get("url")).startswith("https://")
+    ]
+    if not candidates:
+        return None
+
+    def _score(item: dict[str, Any]) -> tuple[int, int]:
+        try:
+            bitrate = int(item.get("bitrate") or 0)
+        except (TypeError, ValueError):
+            bitrate = 0
+        original = int(str(item.get("audioTrackType") or "").upper() == "ORIGINAL")
+        return original, bitrate
+
+    return max(candidates, key=_score)
+
+
+def _piped_raw_extension(stream: dict[str, Any]) -> str:
+    mime = str(stream.get("mimeType") or "").lower()
+    fmt = str(stream.get("format") or "").lower()
+    if "webm" in mime or "webm" in fmt or "opus" in mime or "opus" in fmt:
+        return "webm"
+    if "mp4" in mime or "m4a" in mime or fmt in {"m4a", "mpeg_4", "mp4"}:
+        return "m4a"
+    if "ogg" in mime or "ogg" in fmt:
+        return "ogg"
+    return "audio"
+
+
+def _run_piped_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    api_urls = _configured_piped_api_urls()
+    if not api_urls:
+        raise MusicDownloadError("Piped fallback is not configured")
+
+    video_id = _youtube_video_id(url)
+    if not video_id:
+        raise MusicDownloadError("Unable to extract YouTube video id for Piped fallback")
+
+    base_path = out_template.replace(".%(ext)s", "")
+    expected = f"{base_path}.mp3"
+    errors: list[str] = []
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "AbangRender-MusicBot/1.0",
+    }
+    with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=True) as client:
+        for api_url in api_urls:
+            raw_path: str | None = None
+            try:
+                logging.info("Trying Piped YouTube fallback: instance=%s", api_url)
+                response = client.get(f"{api_url}/streams/{video_id}", headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise MusicDownloadError("Piped returned invalid JSON payload")
+
+                stream = _pick_piped_audio_stream(data)
+                if stream is None:
+                    raise MusicDownloadError("Piped returned no usable audio stream")
+
+                media_url = str(stream["url"])
+                media_host = (urlparse(media_url).hostname or "").lower()
+                if media_host in {"localhost", "127.0.0.1", "::1"}:
+                    raise MusicDownloadError("Piped returned unsafe local media URL")
+
+                raw_path = f"{base_path}.piped.{_piped_raw_extension(stream)}"
+                total = 0
+                with client.stream(
+                    "GET",
+                    media_url,
+                    headers={"User-Agent": headers["User-Agent"]},
+                ) as media_response:
+                    media_response.raise_for_status()
+                    with open(raw_path, "wb") as handle:
+                        for chunk in media_response.iter_bytes(1024 * 1024):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > PIPED_MAX_SOURCE_BYTES:
+                                raise MusicDownloadError("Piped audio source exceeded safety limit")
+                            handle.write(chunk)
+
+                if total <= 0:
+                    raise MusicDownloadError("Piped audio source was empty")
+
+                process = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        raw_path,
+                        "-map",
+                        "0:a:0?",
+                        "-vn",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "libmp3lame",
+                        "-b:a",
+                        f"{int(bitrate_kbps)}k",
+                        expected,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                    check=False,
+                )
+                if process.returncode != 0 or not os.path.isfile(expected):
+                    error_text = (process.stderr or "").strip()
+                    raise MusicDownloadError(
+                        "Piped ffmpeg conversion failed"
+                        + (f": {error_text[-500:]}" if error_text else "")
+                    )
+
+                logging.info(
+                    "Piped YouTube fallback succeeded: instance=%s source_bytes=%s",
+                    api_url,
+                    total,
+                )
+                return expected
+            except Exception as exc:
+                errors.append(f"{api_url}: {exc}")
+                logging.warning(
+                    "Piped YouTube fallback failed: instance=%s error=%s",
+                    api_url,
+                    exc,
+                )
+                try:
+                    if os.path.isfile(expected):
+                        os.remove(expected)
+                except OSError:
+                    pass
+            finally:
+                if raw_path:
+                    try:
+                        os.remove(raw_path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+
+    raise MusicDownloadError(
+        "Piped YouTube fallback failed\n" + "\n".join(errors)
+    )
+
+
 def _run_ytdlp_mp3_sync(
     url: str,
     out_template: str,
@@ -341,6 +540,19 @@ def _run_ytdlp_mp3_sync(
                     client,
                     fallback_error,
                 )
+        piped_urls = _configured_piped_api_urls()
+        if piped_urls:
+            _clear_ytdlp_outputs(out_template)
+            try:
+                return _run_piped_mp3_sync(url, out_template, bitrate_kbps)
+            except Exception as piped_error:
+                last_error = piped_error
+                errors.append(f"piped: {piped_error}")
+                logging.warning(
+                    "Piped YouTube fallback exhausted: error=%s",
+                    piped_error,
+                )
+
         raise MusicDownloadError(
             "\n--- YouTube client retries ---\n" + "\n".join(errors)
         ) from last_error
