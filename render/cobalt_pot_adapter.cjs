@@ -1333,18 +1333,39 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       resolvedSound = await fetchInstagramSoundMetadata(mediaUrl);
     }
 
+    const uploaderHandle = String(uploader || "")
+      .trim()
+      .replace(/^@+/, "");
+    const friendlyHandle = (
+      uploaderHandle &&
+      !/^\d+$/.test(uploaderHandle) &&
+      !/^instagram$/i.test(uploaderHandle)
+    )
+      ? uploaderHandle
+      : "";
+
+    const fallbackHandle = friendlyHandle || (
+      uploaderId && !/^\d+$/.test(uploaderId)
+        ? uploaderId
+        : ""
+    );
+
     const title = (
       resolvedSound?.title ||
       track ||
       (
-        uploaderId
-          ? `Original sound — @${uploaderId}`
-          : rawTitle || `Original sound — ${uploader}`
+        fallbackHandle
+          ? `Original audio — @${fallbackHandle}`
+          : rawTitle || "Instagram audio"
       )
     );
     const performer = (
       resolvedSound?.performer ||
-      (uploaderId ? `@${uploaderId}` : uploader)
+      (
+        fallbackHandle
+          ? `@${fallbackHandle}`
+          : "Instagram"
+      )
     );
     const rawDuration = socialReadMeta(durationPath, "");
     const duration = Number(rawDuration);
