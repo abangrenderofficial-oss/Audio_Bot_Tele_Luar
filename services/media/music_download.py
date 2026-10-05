@@ -231,14 +231,7 @@ def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[s
 
 
 def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
-    # Once the isolated YouTube worker is configured, the public Invidious/
-    # Piped metadata fan-out is no longer the primary path. Those relays are
-    # frequently 401/403 and were adding several seconds before every song.
-    low_memory_mode = (
-        source == "youtube"
-        and _youtube_low_memory_mode()
-        and not _youtube_worker_configured()
-    )
+    low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
     invidious_metadata_error: Exception | None = None
     piped_metadata_error: Exception | None = None
 
@@ -412,13 +405,26 @@ def _configured_piped_api_urls() -> list[str]:
 
 def _configured_invidious_api_urls() -> list[str]:
     raw = (os.getenv("INVIDIOUS_API_URLS") or "").strip()
-    if not raw:
-        return []
-    return [
+    configured = [
         item.strip().rstrip("/")
         for item in re.split(r"[,;\s]+", raw)
         if item.strip()
     ]
+    if not configured:
+        return []
+
+    # This instance is currently the first healthy metadata relay from Render.
+    # Prefer it before stale/blocked entries so we do not burn several seconds
+    # on predictable 401/403 failures for every song.
+    preferred = ["https://invidious.f5.si"]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in [*preferred, *configured]:
+        normalized = item.rstrip("/")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
 
 
 def _env_truthy(name: str) -> bool:
