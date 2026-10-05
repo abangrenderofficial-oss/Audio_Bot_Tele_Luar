@@ -387,6 +387,30 @@ async def _run_music_selftest_from_env() -> None:
             asyncio.get_running_loop().time() - cache_probe_started,
         )
 
+        fast_selftest = (
+            os.getenv("MUSIC_FAST_SELFTEST_SEND", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if fast_selftest:
+            fast_started = asyncio.get_running_loop().time()
+            fast_result = await send_youtube_fast_to_telegram(
+                url,
+                chat_id=ADMIN_ID,
+            )
+            logging.info(
+                "[SELFTEST] FAST PASS: seconds=%.2f file_size=%s "
+                "file_id_present=%s title=%s performer=%s duration=%s",
+                asyncio.get_running_loop().time() - fast_started,
+                fast_result.get("file_size"),
+                bool(fast_result.get("file_id")),
+                fast_result.get("title"),
+                fast_result.get("performer"),
+                fast_result.get("duration"),
+            )
+            return
+
         metadata = await fetch_music_metadata(
             url,
             source="youtube",
@@ -397,23 +421,6 @@ async def _run_music_selftest_from_env() -> None:
             metadata.title,
             metadata.duration,
         )
-
-        if os.getenv("MUSIC_FAST_SELFTEST_SEND", "").strip().lower() in {"1", "true", "yes", "on"}:
-            fast_started = asyncio.get_running_loop().time()
-            fast_result = await send_youtube_fast_to_telegram(
-                url,
-                chat_id=ADMIN_ID,
-                title=metadata.title,
-                performer=metadata.performer,
-                duration=metadata.duration,
-            )
-            logging.info(
-                "[SELFTEST] FAST PASS: seconds=%.2f file_size=%s file_id_present=%s",
-                asyncio.get_running_loop().time() - fast_started,
-                fast_result.get("file_size"),
-                bool(fast_result.get("file_id")),
-            )
-            return
 
         result = await download_music_files(
             url,
