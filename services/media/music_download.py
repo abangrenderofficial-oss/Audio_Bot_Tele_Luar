@@ -556,6 +556,13 @@ def _invidious_raw_extension(stream: dict[str, Any]) -> str:
     return "audio"
 
 
+def _invidious_latest_version_url(api_url: str, video_id: str, itag: str) -> str:
+    return (
+        f"{api_url.rstrip('/')}/latest_version?"
+        + urlencode({"id": video_id, "itag": itag, "local": "true"})
+    )
+
+
 def _curl_proxy_url() -> str | None:
     proxy = (os.getenv("YTDLP_YOUTUBE_PROXY") or "").strip()
     if not proxy:
@@ -676,9 +683,10 @@ def _run_invidious_mp3_sync(
         try:
             itag = str(stream.get("itag") or "").strip()
             if video_id and itag.isdigit():
-                local_media_url = (
-                    f"{api_url}/latest_version?"
-                    + urlencode({"id": video_id, "itag": itag, "local": "true"})
+                local_media_url = _invidious_latest_version_url(
+                    api_url,
+                    video_id,
+                    itag,
                 )
                 logging.info(
                     "Trying Invidious local audio proxy: instance=%s stream=%s/%s itag=%s",
