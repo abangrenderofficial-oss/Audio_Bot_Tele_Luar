@@ -1,3 +1,5 @@
+import services.media.music_download as music_download
+
 from services.media.music_download import (
     BITRATE_CHOICES_KBPS,
     MIN_SINGLE_FILE_KBPS,
@@ -85,3 +87,84 @@ def test_music_cache_key_is_isolated_from_legacy_audio_cache():
     key = build_music_cache_key("https://youtu.be/demo")
     assert key == "https://youtu.be/demo#music_adaptive_mp3_v1"
     assert "audio_artist_dedupe" not in key
+
+
+def test_piped_api_urls_keep_https_urls_intact(monkeypatch):
+    monkeypatch.setenv(
+        "PIPED_API_URLS",
+        "https://pipedapi.duck.party, https://api.piped.private.coffee",
+    )
+
+    assert music_download._configured_piped_api_urls() == [
+        "https://pipedapi.duck.party",
+        "https://api.piped.private.coffee",
+    ]
+
+
+def test_piped_api_urls_support_semicolon_and_whitespace(monkeypatch):
+    monkeypatch.setenv(
+        "PIPED_API_URLS",
+        "https://one.example;https://two.example\nhttps://three.example/",
+    )
+
+    assert music_download._configured_piped_api_urls() == [
+        "https://one.example",
+        "https://two.example",
+        "https://three.example",
+    ]
+
+
+def test_low_memory_youtube_mode_tries_piped_before_ytdlp(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "true")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    calls = []
+
+    def fake_piped(url, out_template, bitrate_kbps):
+        calls.append(("piped", url, bitrate_kbps))
+        return "/tmp/piped.mp3"
+
+    def fail_ytdlp(*args, **kwargs):
+        raise AssertionError("yt-dlp should not run after successful Piped")
+
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", fake_piped)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_once", fail_ytdlp)
+
+    result = music_download._run_ytdlp_mp3_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "/tmp/audio.%(ext)s",
+        192,
+        "youtube",
+    )
+
+    assert result == "/tmp/piped.mp3"
+    assert calls == [("piped", "https://youtu.be/Ftffph3fVEs", 192)]
+
+
+def test_low_memory_youtube_mode_falls_back_to_one_primary_ytdlp(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "1")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    calls = []
+
+    def fail_piped(*args, **kwargs):
+        calls.append("piped")
+        raise RuntimeError("piped unavailable")
+
+    def primary_ytdlp(url, out_template, bitrate_kbps, **kwargs):
+        calls.append(("yt-dlp", kwargs))
+        return "/tmp/primary.mp3"
+
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", fail_piped)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_once", primary_ytdlp)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
+
+    result = music_download._run_ytdlp_mp3_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "/tmp/audio.%(ext)s",
+        192,
+        "youtube",
+    )
+
+    assert result == "/tmp/primary.mp3"
+    assert calls == ["piped", ("yt-dlp", {})]
