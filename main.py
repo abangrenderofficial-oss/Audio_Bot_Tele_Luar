@@ -362,6 +362,98 @@ async def send_analytics(user_id, chat_type, action_name):
         )
 
 
+async def _run_social_music_selftest_from_env() -> None:
+    enabled = (
+        os.getenv("SOCIAL_MUSIC_SELFTEST", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if not enabled:
+        return
+
+    from services.media.music_download import send_social_fast_to_telegram
+    from services.storage.music_cache import (
+        get_cached_social_audio,
+        store_cached_social_audio,
+    )
+
+    cases = [
+        (
+            "tiktok",
+            "https://www.tiktok.com/@cookierun_dev/video/7039716639834656002",
+        ),
+        (
+            "instagram",
+            "https://www.instagram.com/reel/Chunk8-jurw/",
+        ),
+        (
+            "twitter",
+            "https://twitter.com/BTNBrentYarina/status/705235433198714880",
+        ),
+        (
+            "threads",
+            "https://www.threads.com/@kfury/post/DaGcWDwj8tW",
+        ),
+    ]
+
+    for source, url in cases:
+        try:
+            started = asyncio.get_running_loop().time()
+            result = await send_social_fast_to_telegram(
+                url,
+                source=source,
+                chat_id=ADMIN_ID,
+            )
+            elapsed = asyncio.get_running_loop().time() - started
+
+            title = str(result.get("title") or "Audio")
+            performer = str(result.get("performer") or source.title())
+            duration = result.get("duration")
+            file_size = result.get("file_size")
+
+            stored = await store_cached_social_audio(
+                source,
+                url,
+                telegram_file_id=str(result["file_id"]),
+                variant="fast_original",
+                title=title,
+                performer=performer,
+                duration_seconds=(
+                    float(duration) if duration is not None else None
+                ),
+                file_size_bytes=(
+                    int(file_size) if file_size is not None else None
+                ),
+            )
+            cached = await get_cached_social_audio(
+                source,
+                url,
+                variant="fast_original",
+            )
+
+            logging.info(
+                "[SOCIAL-SELFTEST] PASS: source=%s seconds=%.2f "
+                "file_size=%s quality=%s cache_store=%s cache_hit=%s "
+                "title=%s performer=%s duration=%s",
+                source,
+                elapsed,
+                file_size,
+                result.get("quality_label"),
+                stored,
+                bool(cached),
+                title,
+                performer,
+                duration,
+            )
+        except Exception as error:
+            logging.exception(
+                "[SOCIAL-SELFTEST] FAIL: source=%s error=%s",
+                source,
+                error,
+            )
+
+
 async def _run_music_selftest_from_env() -> None:
     url = (os.getenv("MUSIC_SELFTEST_URL") or "").strip()
     if not url or url.lower() in {"0", "off", "false", "disabled"}:
@@ -492,6 +584,9 @@ async def main():
                 _music_cache_keepalive_loop()
             )
             selftest_task = asyncio.create_task(_run_music_selftest_from_env())
+            social_selftest_task = asyncio.create_task(
+                _run_social_music_selftest_from_env()
+            )
             logging.perf(
                 "bot_startup_duration",
                 duration_ms=(asyncio.get_running_loop().time() - startup_started_at)
@@ -516,6 +611,8 @@ async def main():
                 music_cache_keepalive_task.cancel()
             if "selftest_task" in locals():
                 selftest_task.cancel()
+            if "social_selftest_task" in locals():
+                social_selftest_task.cancel()
             if analytics_started:
                 with suppress(Exception):
                     await stop_analytics_workers()
