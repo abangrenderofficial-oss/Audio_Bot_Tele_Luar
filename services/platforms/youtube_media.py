@@ -45,6 +45,7 @@ YTDLP_SPEED_OPTS: dict[str, Any] = {
     "concurrent_fragment_downloads": 4,
 }
 DEFAULT_YOUTUBE_COOKIES_FILE = os.path.join("cookies", "youtube.txt")
+RENDER_YOUTUBE_COOKIES_FILE = "/etc/secrets/youtube.txt"
 
 
 def _read_float_env(name: str) -> Optional[float]:
@@ -113,9 +114,21 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     if max_sleep_interval is not None:
         options["max_sleep_interval"] = max_sleep_interval
 
-    cookies_file = os.getenv("YTDLP_YOUTUBE_COOKIES_FILE")
-    if cookies_file and cookies_file.strip():
-        options["cookiefile"] = cookies_file.strip()
+    cookies_file = (os.getenv("YTDLP_YOUTUBE_COOKIES_FILE") or "").strip()
+    if cookies_file:
+        if os.path.isfile(cookies_file):
+            options["cookiefile"] = cookies_file
+        else:
+            logging.warning(
+                "Configured YouTube cookies file does not exist: %s",
+                cookies_file,
+            )
+    elif os.path.isfile(RENDER_YOUTUBE_COOKIES_FILE):
+        options["cookiefile"] = RENDER_YOUTUBE_COOKIES_FILE
+        logging.info(
+            "Using Render YouTube secret cookies file: %s",
+            RENDER_YOUTUBE_COOKIES_FILE,
+        )
     elif os.path.isfile(DEFAULT_YOUTUBE_COOKIES_FILE):
         options["cookiefile"] = DEFAULT_YOUTUBE_COOKIES_FILE
 

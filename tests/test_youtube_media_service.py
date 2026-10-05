@@ -114,8 +114,10 @@ def test_search_youtube_track_resolves_first_result(tmp_path):
     assert calls[0]["playlistend"] == 1
 
 
-def test_build_ytdlp_youtube_options_includes_optional_access_env(monkeypatch):
-    monkeypatch.setenv("YTDLP_YOUTUBE_COOKIES_FILE", "cookies.txt")
+def test_build_ytdlp_youtube_options_includes_optional_access_env(monkeypatch, tmp_path):
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    monkeypatch.setenv("YTDLP_YOUTUBE_COOKIES_FILE", str(cookies_file))
     monkeypatch.setenv("YTDLP_YOUTUBE_COOKIES_FROM_BROWSER", "firefox:Profile 1")
     monkeypatch.setenv("YTDLP_YOUTUBE_PLAYER_CLIENT", "web,android")
     monkeypatch.setenv("YTDLP_YOUTUBE_PO_TOKEN", "web.gvs+token")
@@ -127,7 +129,7 @@ def test_build_ytdlp_youtube_options_includes_optional_access_env(monkeypatch):
 
     options = build_ytdlp_youtube_options(skip_download=True)
 
-    assert options["cookiefile"] == "cookies.txt"
+    assert options["cookiefile"] == str(cookies_file)
     assert options["cookiesfrombrowser"] == ("firefox", "Profile 1", None, None)
     assert options["extractor_args"]["youtube"]["player_client"] == ["web", "android"]
     assert options["extractor_args"]["youtube"]["po_token"] == ["web.gvs+token"]
@@ -146,6 +148,21 @@ def test_build_ytdlp_youtube_options_enables_node_fallback_by_default(monkeypatc
     options = build_ytdlp_youtube_options(skip_download=True)
 
     assert options["js_runtimes"] == {"deno": {}, "node": {}}
+
+
+def test_build_ytdlp_youtube_options_uses_render_secret_cookies_file(monkeypatch, tmp_path):
+    secret_file = tmp_path / "youtube.txt"
+    secret_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    monkeypatch.delenv("YTDLP_YOUTUBE_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("YTDLP_YOUTUBE_COOKIES_FROM_BROWSER", raising=False)
+    monkeypatch.setattr(
+        "services.platforms.youtube_media.RENDER_YOUTUBE_COOKIES_FILE",
+        str(secret_file),
+    )
+
+    options = build_ytdlp_youtube_options(skip_download=True)
+
+    assert options["cookiefile"] == str(secret_file)
 
 
 def test_build_ytdlp_youtube_options_uses_default_cookies_file(monkeypatch, tmp_path):
