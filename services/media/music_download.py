@@ -1347,7 +1347,10 @@ def _youtube_worker_auth_token() -> str:
     except Exception:
         pass
 
-    return v3_key or railway_key or generic_key or bot_token
+    # Prefer the generic worker key before legacy Railway-specific keys.
+    # Render diagnostics proved the legacy Railway key can be stale while
+    # YOUTUBE_WORKER_API_KEY matches the active Railway worker exactly.
+    return v3_key or generic_key or railway_key or bot_token
 
 
 def _youtube_worker_configured() -> bool:
