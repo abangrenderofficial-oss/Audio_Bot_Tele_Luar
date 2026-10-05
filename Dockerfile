@@ -140,6 +140,73 @@ if needle not in s:
 p.write_text(s.replace(needle, replacement, 1))
 PY
 
+RUN python - <<'PY'
+from pathlib import Path
+p = Path('/app/potoken_generator/extractor.py')
+s = p.read_text()
+old = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
+        if not event.request.method == 'POST':
+            return
+        if '/youtubei/v1/player' not in event.request.url:
+            return
+        token_info = self._extract_token(event.request)
+        if token_info is None:
+            return
+        logger.info(f'new token: {token_info.to_json()}')
+        self._token_info = token_info
+        self._extraction_done.set()
+"""
+new = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
+        request = event.request
+        if request.method != 'POST':
+            return
+
+        # YouTube has moved BotGuard-backed player requests between different
+        # youtubei endpoints over time. Detect the trusted-session payload by
+        # its actual fields instead of hard-coding /youtubei/v1/player.
+        post_data = request.post_data
+        if not post_data:
+            return
+
+        try:
+            post_data_json = json.loads(post_data)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        context = post_data_json.get('context') or {}
+        client = context.get('client') or {}
+        integrity = post_data_json.get('serviceIntegrityDimensions') or {}
+        visitor_data = client.get('visitorData')
+        potoken = integrity.get('poToken')
+
+        if 'youtubei' in request.url:
+            from urllib.parse import urlsplit
+            path = urlsplit(request.url).path
+            logger.info(
+                f'network diagnostics youtubei_path={path} '
+                f'has_visitor={bool(visitor_data)} has_potoken={bool(potoken)}'
+            )
+
+        if not visitor_data or not potoken:
+            return
+
+        token_info = TokenInfo(
+            updated=int(time.time()),
+            potoken=potoken,
+            visitor_data=visitor_data,
+        )
+        logger.info(
+            f'trusted session token captured '
+            f'potoken_len={len(potoken)} visitor_len={len(visitor_data)}'
+        )
+        self._token_info = token_info
+        self._extraction_done.set()
+"""
+if old not in s:
+    raise SystemExit('official extractor.py send-handler layout changed')
+p.write_text(s.replace(old, new, 1))
+PY
+
 RUN chmod +x /app/start-render-session.sh
 
 CMD ["/app/start-render-session.sh"]
