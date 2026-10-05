@@ -5,9 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WARP_HOME="$ROOT/.runtime/session-warp"
 WGCF_BIN="$ROOT/.session-bin/wgcf"
 WIREPROXY_BIN="$ROOT/.session-bin/wireproxy"
+YTDLP_BIN="$ROOT/.session-bin/yt-dlp"
 PROFILE="$WARP_HOME/wgcf-profile.conf"
 
 mkdir -p "$WARP_HOME"
+
+if [[ ! -x "$YTDLP_BIN" ]]; then
+  curl -fsSL -o "$YTDLP_BIN" https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+  chmod +x "$YTDLP_BIN"
+fi
+
+export YOUTUBE_WORKER_YTDLP_BIN="$YTDLP_BIN"
+export YOUTUBE_WORKER_PLUGIN_DIR="$ROOT/.bgutil/plugin"
+export YOUTUBE_WORKER_PROXY="${YOUTUBE_WORKER_PROXY:-socks5://127.0.0.1:1080}"
 cd "$WARP_HOME"
 
 if [[ ! -f wgcf-account.toml ]]; then
