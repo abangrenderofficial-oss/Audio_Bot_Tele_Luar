@@ -137,6 +137,12 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     if youtube_proxy:
         options["proxy"] = youtube_proxy
 
+    youtube_user_agent = (os.getenv("YTDLP_YOUTUBE_USER_AGENT") or "").strip()
+    if youtube_user_agent:
+        headers = dict(options.get("http_headers") or {})
+        headers["User-Agent"] = youtube_user_agent
+        options["http_headers"] = headers
+
     sleep_requests = _read_float_env("YTDLP_YOUTUBE_SLEEP_REQUESTS_SECONDS")
     if sleep_requests is not None:
         options["sleep_interval_requests"] = sleep_requests
