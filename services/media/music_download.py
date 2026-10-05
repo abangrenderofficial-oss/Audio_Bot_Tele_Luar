@@ -1449,6 +1449,42 @@ async def _download_mp3(
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
     if source == "youtube":
+        relay_errors: list[str] = []
+
+        if _configured_invidious_api_urls():
+            try:
+                logging.info("Trying Invidious relay as YouTube Music primary path")
+                return await asyncio.to_thread(
+                    _run_invidious_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                )
+            except Exception as exc:
+                relay_errors.append(f"Invidious: {exc}")
+                logging.warning(
+                    "Invidious YouTube Music primary path failed: error=%s",
+                    exc,
+                )
+                _clear_ytdlp_outputs(out_template)
+
+        if _configured_piped_api_urls():
+            try:
+                logging.info("Trying Piped relay as YouTube Music primary path")
+                return await asyncio.to_thread(
+                    _run_piped_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                )
+            except Exception as exc:
+                relay_errors.append(f"Piped: {exc}")
+                logging.warning(
+                    "Piped YouTube Music primary path failed: error=%s",
+                    exc,
+                )
+                _clear_ytdlp_outputs(out_template)
+
         guest_error: Exception | None = None
         try:
             return await asyncio.to_thread(
@@ -1460,7 +1496,7 @@ async def _download_mp3(
         except Exception as exc:
             guest_error = exc
             logging.warning(
-                "Guest WPC YouTube Music primary path failed: error=%s",
+                "Guest WPC YouTube Music fallback failed: error=%s",
                 exc,
             )
             _clear_ytdlp_outputs(out_template)
@@ -1470,7 +1506,7 @@ async def _download_mp3(
                 return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
             except Exception as cobalt_error:
                 logging.warning(
-                    "Cobalt YouTube Music fallback failed; using direct chain: error=%s",
+                    "Cobalt YouTube Music fallback failed; using final direct chain: error=%s",
                     cobalt_error,
                 )
                 _clear_ytdlp_outputs(out_template)
@@ -1483,14 +1519,16 @@ async def _download_mp3(
                         source,
                     )
                 except MusicDownloadError as direct_error:
+                    relay_text = "\n".join(relay_errors) or "No relay configured"
                     raise MusicDownloadError(
-                        f"Guest WPC primary: {guest_error}\n"
+                        f"Relay paths:\n{relay_text}\n"
+                        f"--- Guest WPC fallback ---\n{guest_error}\n"
                         f"--- Cobalt fallback ---\n{cobalt_error}\n"
                         f"--- Direct fallback ---\n{direct_error}"
                     ) from direct_error
 
         logging.warning(
-            "Cobalt fallback unavailable after Guest WPC failure: COBALT_API_URL/COBALT_API_KEY not configured"
+            "Cobalt fallback unavailable after relay/WPC failure: COBALT_API_URL/COBALT_API_KEY not configured"
         )
 
     return await asyncio.to_thread(
