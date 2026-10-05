@@ -2,6 +2,7 @@ import asyncio
 import glob
 import os
 import re
+import shutil
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -46,6 +47,7 @@ YTDLP_SPEED_OPTS: dict[str, Any] = {
 }
 DEFAULT_YOUTUBE_COOKIES_FILE = os.path.join("cookies", "youtube.txt")
 RENDER_YOUTUBE_COOKIES_FILE = "/etc/secrets/youtube.txt"
+RUNTIME_YOUTUBE_COOKIES_FILE = "/tmp/abangrender-youtube.txt"
 
 
 def _read_float_env(name: str) -> Optional[float]:
@@ -92,6 +94,37 @@ def _parse_cookies_from_browser(value: str) -> tuple[str, Optional[str], Optiona
     return browser_name.lower(), profile, keyring.upper() if keyring else None, container
 
 
+def _prepare_render_youtube_cookiefile() -> str | None:
+    if not os.path.isfile(RENDER_YOUTUBE_COOKIES_FILE):
+        return None
+
+    runtime_file = (
+        os.getenv("YTDLP_YOUTUBE_RENDER_RUNTIME_COOKIES_FILE")
+        or RUNTIME_YOUTUBE_COOKIES_FILE
+    ).strip()
+    if not runtime_file:
+        return None
+
+    try:
+        parent = os.path.dirname(runtime_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if not os.path.isfile(runtime_file):
+            shutil.copyfile(RENDER_YOUTUBE_COOKIES_FILE, runtime_file)
+            os.chmod(runtime_file, 0o600)
+            logging.info(
+                "Copied Render YouTube secret cookies to writable runtime file: %s",
+                runtime_file,
+            )
+        return runtime_file
+    except OSError as exc:
+        logging.warning(
+            "Unable to prepare writable Render YouTube cookies file: %s",
+            exc,
+        )
+        return None
+
+
 def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     options = {**YTDLP_SPEED_OPTS}
     verbose_flag = (os.getenv("YTDLP_VERBOSE") or "").strip().lower()
@@ -123,11 +156,11 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
                 "Configured YouTube cookies file does not exist: %s",
                 cookies_file,
             )
-    elif os.path.isfile(RENDER_YOUTUBE_COOKIES_FILE):
-        options["cookiefile"] = RENDER_YOUTUBE_COOKIES_FILE
+    elif render_cookiefile := _prepare_render_youtube_cookiefile():
+        options["cookiefile"] = render_cookiefile
         logging.info(
-            "Using Render YouTube secret cookies file: %s",
-            RENDER_YOUTUBE_COOKIES_FILE,
+            "Using writable runtime copy of Render YouTube secret cookies: %s",
+            render_cookiefile,
         )
     elif os.path.isfile(DEFAULT_YOUTUBE_COOKIES_FILE):
         options["cookiefile"] = DEFAULT_YOUTUBE_COOKIES_FILE
