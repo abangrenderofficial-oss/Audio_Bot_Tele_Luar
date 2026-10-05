@@ -866,7 +866,11 @@ async function resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText) {
   }
 }
 
-async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
+async function runYoutubeWorkerAudio(
+  videoUrl,
+  cookiesText,
+  { captureMetadata = false } = {}
+) {
   if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
     throw new Error("yt-dlp worker binary is missing");
   }
@@ -878,7 +882,24 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
   const prefix = path.join(os.tmpdir(), `youtube-worker-${id}`);
   const cookiePath = `${prefix}.cookies.txt`;
   const outputTemplate = `${prefix}.%(ext)s`;
+  const titlePath = `${prefix}.title.txt`;
+  const performerPath = `${prefix}.performer.txt`;
+  const durationPath = `${prefix}.duration.txt`;
   let outputPath = null;
+
+  const metadataArgs = captureMetadata
+    ? [
+        "--print-to-file",
+        "after_move:%(title)s",
+        titlePath,
+        "--print-to-file",
+        "after_move:%(uploader)s",
+        performerPath,
+        "--print-to-file",
+        "after_move:%(duration)s",
+        durationPath,
+      ]
+    : [];
 
   const baseArgs = [
     "--no-playlist",
@@ -898,6 +919,7 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
     "--format",
     "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--output", outputTemplate,
+    ...metadataArgs,
   ];
 
   const clearOutputs = () => {
@@ -946,12 +968,40 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
       throw new Error("YouTube worker audio exceeded safety limit");
     }
     console.log(`[YOUTUBE-WORKER] download ready bytes=${stat.size}`);
-    return outputPath;
+
+    if (!captureMetadata) {
+      return outputPath;
+    }
+
+    const readMeta = (metaPath, fallback = "") => {
+      try {
+        return fs.readFileSync(metaPath, "utf8").trim() || fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const rawDuration = readMeta(durationPath, "");
+    const parsedDuration = Number(rawDuration);
+
+    return {
+      filePath: outputPath,
+      metadata: {
+        title: readMeta(titlePath, "Audio"),
+        performer: readMeta(performerPath, "YouTube"),
+        duration:
+          Number.isFinite(parsedDuration) && parsedDuration > 0
+            ? parsedDuration
+            : null,
+      },
+    };
   } catch (error) {
     clearOutputs();
     throw error;
   } finally {
     try { fs.rmSync(cookiePath, { force: true }); } catch {}
+    try { fs.rmSync(titlePath, { force: true }); } catch {}
+    try { fs.rmSync(performerPath, { force: true }); } catch {}
+    try { fs.rmSync(durationPath, { force: true }); } catch {}
   }
 }
 
@@ -1394,23 +1444,47 @@ const server = http.createServer(async (request, response) => {
         }
       }
 
+      let resolvedTitle = body?.title;
+      let resolvedPerformer = body?.performer;
+      let resolvedDuration = body?.duration;
+
       if (!sent) {
-        filePath = await enqueueYoutubeWorker(() =>
-          runYoutubeWorkerAudio(videoUrl, cookiesText)
+        const downloaded = await enqueueYoutubeWorker(() =>
+          runYoutubeWorkerAudio(videoUrl, cookiesText, { captureMetadata: true })
         );
+        filePath = downloaded.filePath;
+        const downloadedMetadata = downloaded.metadata || {};
+        resolvedTitle = resolvedTitle || downloadedMetadata.title || "Audio";
+        resolvedPerformer =
+          resolvedPerformer || downloadedMetadata.performer || "YouTube";
+        resolvedDuration =
+          Number(resolvedDuration) > 0
+            ? Number(resolvedDuration)
+            : Number(downloadedMetadata.duration) > 0
+              ? Number(downloadedMetadata.duration)
+              : null;
 
         sent = await sendWorkerAudioToTelegram({
           botToken,
           chatId,
           filePath,
-          title: body?.title,
-          performer: body?.performer,
-          duration: body?.duration,
+          title: resolvedTitle,
+          performer: resolvedPerformer,
+          duration: resolvedDuration,
           businessConnectionId: body?.business_connection_id,
         });
       }
 
-      const payload = JSON.stringify({ ok: true, ...sent });
+      const payload = JSON.stringify({
+        ok: true,
+        ...sent,
+        title: telegramText(resolvedTitle, "Audio", 200),
+        performer: telegramText(resolvedPerformer, "YouTube", 200),
+        duration:
+          Number(resolvedDuration) > 0
+            ? Number(resolvedDuration)
+            : sent?.duration || null,
+      });
       response.writeHead(200, {
         "content-type": "application/json",
         "content-length": Buffer.byteLength(payload),
