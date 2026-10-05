@@ -38,10 +38,11 @@ from services.inline.album_links import create_inline_album_request
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
-from services.media.delivery import build_audio_cache_key, send_audio_with_thumbnail
+from services.media.delivery import send_audio_with_thumbnail
 from services.media.music_download import (
     MusicDownloadError,
     MusicDownloadResult,
+    build_music_cache_key,
     cleanup_music_result,
     download_music_files,
     fetch_music_metadata,
@@ -268,7 +269,7 @@ async def process_music_link(
                     ),
                 )
 
-        cache_key = build_audio_cache_key(source_url)
+        cache_key = build_music_cache_key(source_url)
         cached_file_id = await db.get_file_id(cache_key)
         if cached_file_id:
             await safe_edit_text(status_message, bm.uploading_status())
