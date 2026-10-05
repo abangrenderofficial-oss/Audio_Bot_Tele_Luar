@@ -50,6 +50,10 @@ RENDER_YOUTUBE_COOKIES_FILE = "/etc/secrets/youtube.txt"
 RUNTIME_YOUTUBE_COOKIES_FILE = "/tmp/abangrender-youtube.txt"
 
 
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _read_float_env(name: str) -> Optional[float]:
     value = os.getenv(name)
     if value is None or not value.strip():
