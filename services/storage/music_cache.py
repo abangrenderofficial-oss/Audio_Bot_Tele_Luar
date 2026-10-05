@@ -40,12 +40,19 @@ def configured() -> bool:
     return bool(_API_URL and _API_KEY)
 
 
-async def _call(payload: dict[str, Any]) -> dict[str, Any] | None:
+async def _call(
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float = 1.8,
+) -> dict[str, Any] | None:
     if not configured():
         return None
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(3.5, connect=2.0),
+            timeout=httpx.Timeout(
+                max(0.5, float(timeout_seconds)),
+                connect=min(2.0, max(0.5, float(timeout_seconds))),
+            ),
             follow_redirects=True,
         ) as client:
             response = await client.post(
@@ -65,7 +72,11 @@ async def _call(payload: dict[str, Any]) -> dict[str, Any] | None:
         data = response.json()
         return data if isinstance(data, dict) else None
     except Exception as exc:
-        logging.warning("Remote music cache unavailable: %s", exc)
+        logging.warning(
+            "Remote music cache unavailable: type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
         return None
 
 
@@ -111,6 +122,15 @@ async def store_cached_audio(
             "duration_seconds": duration_seconds,
             "file_size_bytes": file_size_bytes,
             "source_url": source_url,
-        }
+        },
+        timeout_seconds=5.0,
+    )
+    return bool(data and data.get("ok"))
+
+
+async def warm_music_cache(*, timeout_seconds: float = 8.0) -> bool:
+    data = await _call(
+        {"action": "ping"},
+        timeout_seconds=timeout_seconds,
     )
     return bool(data and data.get("ok"))
