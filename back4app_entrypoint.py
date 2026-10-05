@@ -156,10 +156,6 @@ def _start_pot_provider() -> subprocess.Popen | None:
     if _env_truthy("YOUTUBE_LOW_MEMORY_MODE"):
         print("[POT] skipped because YOUTUBE_LOW_MEMORY_MODE is enabled", flush=True)
         return None
-    if _env_truthy("YOUTUBE_WARP_PROXY_ENABLED") and os.getenv("YTDLP_YOUTUBE_PROXY"):
-        print("[POT] skipped because verified WARP egress is active", flush=True)
-        return None
-
     node_modules = POT_HOME / "node_modules"
     entrypoint = POT_HOME / "src" / "main.ts"
     if not node_modules.is_dir() or not entrypoint.is_file():
