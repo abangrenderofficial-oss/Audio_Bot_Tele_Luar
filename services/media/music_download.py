@@ -1394,7 +1394,8 @@ async def _run_cobalt_mp3(
         },
         source="youtube_music",
         timeout=20,
-        attempts=2,
+        attempts=4,
+        retry_delay=3.0,
     )
     if not data:
         raise MusicDownloadError("Cobalt returned no usable response")
