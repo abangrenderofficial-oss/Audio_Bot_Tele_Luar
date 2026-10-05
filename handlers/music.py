@@ -50,6 +50,7 @@ from services.media.music_download import (
     download_music_files,
     fetch_music_metadata,
     make_music_plan,
+    send_youtube_fast_to_telegram,
 )
 
 logging = logging.bind(service="music")
@@ -251,14 +252,17 @@ async def process_music_link(
         # touching YouTube, Oregon, or FFmpeg at all.
         if service_name == "youtube":
             cache_started = time.perf_counter()
-            remote_cached = await get_cached_audio(
-                source_url,
-                variant="mp3_320",
+            remote_mp3, remote_fast = await asyncio.gather(
+                get_cached_audio(source_url, variant="mp3_320"),
+                get_cached_audio(source_url, variant="fast_original"),
             )
+            remote_cached = remote_mp3 or remote_fast
+            remote_variant = "mp3_320" if remote_mp3 else "fast_original"
             logging.info(
-                "Music timing: stage=global_cache_lookup seconds=%.2f hit=%s",
+                "Music timing: stage=global_cache_lookup seconds=%.2f hit=%s variant=%s",
                 time.perf_counter() - cache_started,
                 bool(remote_cached),
+                remote_variant if remote_cached else "miss",
             )
             if remote_cached:
                 cached_title = str(remote_cached.get("title") or "Audio")
@@ -266,6 +270,11 @@ async def process_music_link(
                     remote_cached.get("performer") or "YouTube"
                 )
                 cached_duration = remote_cached.get("duration_seconds")
+                quality_label = (
+                    "320 kbps"
+                    if remote_variant == "mp3_320"
+                    else "Original Quality"
+                )
                 try:
                     await safe_edit_text(status_message, bm.uploading_status())
                     await send_chat_action_if_needed(
@@ -280,14 +289,17 @@ async def process_music_link(
                         audio=str(remote_cached["telegram_file_id"]),
                         title=cached_title,
                         performer=cached_performer,
-                        caption=f"🎵 {html.escape(cached_title)}\n320 kbps",
+                        caption=(
+                            f"🎵 {html.escape(cached_title)}\n{quality_label}"
+                        ),
                         bot_url=bot_url,
                         duration=cached_duration,
                         parse_mode="HTML",
                     )
                     logging.info(
-                        "Music timing: stage=global_cache_send seconds=%.2f",
+                        "Music timing: stage=global_cache_send seconds=%.2f variant=%s",
                         time.perf_counter() - send_started,
+                        remote_variant,
                     )
                 except Exception as cache_send_error:
                     logging.warning(
@@ -360,6 +372,62 @@ async def process_music_link(
                 user_settings.get("delete_message"),
             )
             return
+
+        if service_name == "youtube":
+            try:
+                if status_message:
+                    await safe_edit_text(
+                        status_message,
+                        (
+                            f"🎧 {metadata.title}\n\n"
+                            "Fast Original • sedang hantar terus dari Oregon..."
+                        ),
+                    )
+                await send_chat_action_if_needed(
+                    bot,
+                    message.chat.id,
+                    "upload_audio",
+                    business_id,
+                )
+                fast_result = await send_youtube_fast_to_telegram(
+                    source_url,
+                    chat_id=message.chat.id,
+                    title=metadata.title,
+                    performer=metadata.performer,
+                    duration=metadata.duration,
+                    business_connection_id=business_id,
+                )
+            except Exception as fast_error:
+                logging.warning(
+                    "Fast Original direct path failed; falling back to MP3 pipeline: %s",
+                    fast_error,
+                )
+            else:
+                try:
+                    await store_cached_audio(
+                        source_url,
+                        telegram_file_id=str(fast_result["file_id"]),
+                        variant="fast_original",
+                        title=metadata.title,
+                        performer=metadata.performer,
+                        duration_seconds=metadata.duration,
+                        file_size_bytes=(
+                            int(fast_result.get("file_size"))
+                            if fast_result.get("file_size") is not None
+                            else None
+                        ),
+                    )
+                except Exception as exc:
+                    logging.warning(
+                        "Fast Original persistent cache store failed: %s",
+                        exc,
+                    )
+                request_lease.mark_success()
+                await maybe_delete_user_message(
+                    message,
+                    user_settings.get("delete_message"),
+                )
+                return
 
         job_id = (
             f"{message.chat.id}-{message.message_id}-"
