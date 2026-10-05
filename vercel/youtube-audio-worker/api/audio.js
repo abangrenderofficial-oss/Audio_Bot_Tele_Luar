@@ -129,28 +129,70 @@ async function guestTube() {
   return guestTubePromise;
 }
 
+const AUDIO_CLIENTS = [
+  "TV",
+  "MWEB",
+  "ANDROID",
+  "WEB",
+  "IOS",
+  "TV_EMBEDDED",
+  "WEB_EMBEDDED",
+];
+
 async function openAudioStream(tube, videoId) {
-  const info = await tube.getBasicInfo(videoId);
-  const format = info.chooseFormat({
-    type: "audio",
-    quality: "best",
-    format: "any",
-  });
+  const errors = [];
 
-  if (!format) throw new Error("no usable audio format");
+  for (const client of AUDIO_CLIENTS) {
+    try {
+      const info = await tube.getBasicInfo(videoId, { client });
 
-  const declared = Number(format.content_length || 0);
-  if (Number.isFinite(declared) && declared > MAX_AUDIO_BYTES) {
-    throw new Error("audio source exceeds size limit");
+      if (!info.streaming_data) {
+        const status = info.playability_status?.status || "unknown";
+        const reason =
+          info.playability_status?.reason ||
+          info.playability_status?.messages?.join?.(" ") ||
+          "streaming data unavailable";
+        throw new Error(`${status}: ${reason}`);
+      }
+
+      const format = info.chooseFormat({
+        type: "audio",
+        quality: "best",
+        format: "any",
+      });
+
+      if (!format) throw new Error("no usable audio format");
+
+      const declared = Number(format.content_length || 0);
+      if (Number.isFinite(declared) && declared > MAX_AUDIO_BYTES) {
+        throw new Error("audio source exceeds size limit");
+      }
+
+      const stream = await info.download({
+        type: "audio",
+        quality: "best",
+        format: "any",
+      });
+
+      console.log(
+        `[YOUTUBE-AUDIO-WORKER] client=${client} streaming ready bytes=${declared || "unknown"}`
+      );
+      return { stream, declared, client };
+    } catch (error) {
+      const detail =
+        error && typeof error.message === "string"
+          ? error.message.slice(0, 240)
+          : String(error).slice(0, 240);
+      errors.push(`${client}: ${detail}`);
+      console.warn(
+        `[YOUTUBE-AUDIO-WORKER] client=${client} failed: ${detail}`
+      );
+    }
   }
 
-  const stream = await info.download({
-    type: "audio",
-    quality: "best",
-    format: "any",
-  });
-
-  return { stream, declared };
+  throw new Error(
+    `No YouTube client returned usable streaming data: ${errors.join(" | ")}`
+  );
 }
 
 async function acquireAudio(videoId, cookieHeader) {
