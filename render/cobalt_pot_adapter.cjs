@@ -729,6 +729,137 @@ function findYoutubeWorkerOutput(prefix) {
   return matches[0];
 }
 
+function runYoutubeWorkerCapture(args, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(YOUTUBE_WORKER_YTDLP_BIN, args, {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error("YouTube URL resolver timed out")));
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on("data", (chunk) => {
+      stdout = (stdout + chunk.toString("utf8")).slice(-64000);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-12000);
+    });
+    child.once("error", (error) => finish(() => reject(error)));
+    child.once("exit", (code, signal) => {
+      finish(() => {
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+        const detail = stderr.trim().slice(-1200);
+        reject(
+          new Error(
+            `yt-dlp URL resolver failed code=${code} signal=${signal || ""}` +
+              (detail ? `: ${detail}` : "")
+          )
+        );
+      });
+    });
+  });
+}
+
+async function resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText) {
+  if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
+    throw new Error("yt-dlp worker binary is missing");
+  }
+  if (!fs.existsSync(YOUTUBE_WORKER_PLUGIN_DIR)) {
+    throw new Error("bgutil yt-dlp plugin directory is missing");
+  }
+
+  const id = crypto.randomUUID();
+  const cookiePath = path.join(os.tmpdir(), `youtube-url-${id}.cookies.txt`);
+  if (String(cookiesText || "").trim()) {
+    fs.writeFileSync(cookiePath, cookiesText, { mode: 0o600 });
+  }
+
+  const baseArgs = [
+    "--no-playlist",
+    "--no-warnings",
+    "--quiet",
+    "--socket-timeout", "15",
+    "--retries", "1",
+    "--fragment-retries", "1",
+    "--proxy", YOUTUBE_WORKER_PROXY,
+    "--plugin-dirs", YOUTUBE_WORKER_PLUGIN_DIR,
+    "--js-runtimes", "node",
+    "--extractor-args",
+    "youtube:player_client=mweb;fetch_pot=always",
+    "--extractor-args",
+    "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+    "--format",
+    "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
+    "--get-url",
+  ];
+
+  const parseUrl = (output) => {
+    const candidates = String(output || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("https://"));
+    if (!candidates.length) throw new Error("yt-dlp returned no direct audio URL");
+    const selected = candidates[0];
+    const parsed = new URL(selected);
+    if (parsed.protocol !== "https:") throw new Error("resolved audio URL is not HTTPS");
+    return selected;
+  };
+
+  try {
+    console.log("[YOUTUBE-WORKER] direct URL resolve start");
+    const started = Date.now();
+    try {
+      const output = await runYoutubeWorkerCapture(
+        [...baseArgs, videoUrl],
+        60000
+      );
+      const audioUrl = parseUrl(output);
+      console.log(
+        `[YOUTUBE-WORKER] direct URL resolved ms=${Date.now() - started}`
+      );
+      return audioUrl;
+    } catch (guestError) {
+      if (!fs.existsSync(cookiePath)) throw guestError;
+      console.warn(
+        "[YOUTUBE-WORKER] guest URL resolve failed:",
+        String(guestError?.message || guestError).slice(0, 1000)
+      );
+      const output = await runYoutubeWorkerCapture(
+        [...baseArgs, "--cookies", cookiePath, videoUrl],
+        60000
+      );
+      const audioUrl = parseUrl(output);
+      console.log(
+        `[YOUTUBE-WORKER] cookie URL resolved ms=${Date.now() - started}`
+      );
+      return audioUrl;
+    }
+  } finally {
+    try { fs.rmSync(cookiePath, { force: true }); } catch {}
+  }
+}
+
 async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
   if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
     throw new Error("yt-dlp worker binary is missing");
@@ -1003,6 +1134,74 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;");
 }
 
+async function sendWorkerAudioUrlToTelegram({
+  botToken,
+  chatId,
+  audioUrl,
+  title,
+  performer,
+  duration,
+  businessConnectionId,
+}) {
+  if (!(await validateTelegramBotToken(botToken))) {
+    throw new Error("invalid Telegram bot token");
+  }
+
+  const parsed = new URL(String(audioUrl || ""));
+  if (parsed.protocol !== "https:") {
+    throw new Error("Telegram direct audio URL must be HTTPS");
+  }
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("audio", audioUrl);
+  form.append("title", telegramText(title, "Audio", 64));
+  form.append("performer", telegramText(performer, "YouTube", 64));
+  if (Number(duration) > 0) {
+    form.append("duration", String(Math.round(Number(duration))));
+  }
+  form.append(
+    "caption",
+    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\nOriginal Quality`
+  );
+  form.append("parse_mode", "HTML");
+  if (businessConnectionId) {
+    form.append("business_connection_id", String(businessConnectionId));
+  }
+
+  const started = Date.now();
+  const tgResponse = await fetch(
+    `https://api.telegram.org/bot${botToken}/sendAudio`,
+    {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(120000),
+    }
+  );
+  const raw = await tgResponse.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+
+  if (!tgResponse.ok || !data?.ok || !data?.result?.audio?.file_id) {
+    throw new Error(
+      `Telegram URL sendAudio failed status=${tgResponse.status}: ${String(
+        data?.description || raw || "unknown"
+      ).slice(0, 500)}`
+    );
+  }
+
+  console.log(
+    `[YOUTUBE-WORKER] Telegram URL send ready ms=${Date.now() - started}`
+  );
+  return {
+    message_id: data.result.message_id,
+    file_id: data.result.audio.file_id,
+    file_unique_id: data.result.audio.file_unique_id || null,
+    file_size: data.result.audio.file_size || null,
+    duration: data.result.audio.duration || null,
+  };
+}
+
 async function sendWorkerAudioToTelegram({
   botToken,
   chatId,
@@ -1159,19 +1358,40 @@ const server = http.createServer(async (request, response) => {
       }
 
       console.log("[YOUTUBE-WORKER] direct Telegram audio start");
-      filePath = await enqueueYoutubeWorker(() =>
-        runYoutubeWorkerAudio(videoUrl, cookiesText)
-      );
+      let sent = null;
+      try {
+        const audioUrl = await enqueueYoutubeWorker(() =>
+          resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText)
+        );
+        sent = await sendWorkerAudioUrlToTelegram({
+          botToken,
+          chatId,
+          audioUrl,
+          title: body?.title,
+          performer: body?.performer,
+          duration: body?.duration,
+          businessConnectionId: body?.business_connection_id,
+        });
+        console.log("[YOUTUBE-WORKER] direct URL Telegram path succeeded");
+      } catch (urlError) {
+        console.warn(
+          "[YOUTUBE-WORKER] direct URL Telegram path failed; using file fallback:",
+          String(urlError?.message || urlError).slice(0, 1200)
+        );
+        filePath = await enqueueYoutubeWorker(() =>
+          runYoutubeWorkerAudio(videoUrl, cookiesText)
+        );
 
-      const sent = await sendWorkerAudioToTelegram({
-        botToken,
-        chatId,
-        filePath,
-        title: body?.title,
-        performer: body?.performer,
-        duration: body?.duration,
-        businessConnectionId: body?.business_connection_id,
-      });
+        sent = await sendWorkerAudioToTelegram({
+          botToken,
+          chatId,
+          filePath,
+          title: body?.title,
+          performer: body?.performer,
+          duration: body?.duration,
+          businessConnectionId: body?.business_connection_id,
+        });
+      }
 
       const payload = JSON.stringify({ ok: true, ...sent });
       response.writeHead(200, {
