@@ -431,7 +431,11 @@ def _extract_piped_info_sync(url: str) -> dict[str, Any]:
     )
 
 
-def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
+def _fetch_invidious_video_sync(
+    url: str,
+    *,
+    local: bool = False,
+) -> tuple[dict[str, Any], str]:
     api_urls = _configured_invidious_api_urls()
     if not api_urls:
         raise MusicDownloadError("Invidious fallback is not configured")
@@ -454,7 +458,7 @@ def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
                 logging.info("Trying Invidious YouTube API: instance=%s", api_url)
                 response = client.get(
                     f"{api_url}/api/v1/videos/{video_id}",
-                    params={"local": "false"},
+                    params={"local": "true" if local else "false"},
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -673,6 +677,24 @@ def _run_invidious_mp3_sync(
     if not streams:
         raise MusicDownloadError("Invidious returned no usable audio stream")
 
+    local_streams_by_itag: dict[str, tuple[dict[str, Any], str]] = {}
+    try:
+        local_data, local_api_url = _fetch_invidious_video_sync(url, local=True)
+        for local_stream in _invidious_audio_streams(local_data):
+            local_itag = str(local_stream.get("itag") or "").strip()
+            if local_itag:
+                local_streams_by_itag[local_itag] = (local_stream, local_api_url)
+        logging.info(
+            "Loaded Invidious API-generated local audio URLs: instance=%s count=%s",
+            local_api_url,
+            len(local_streams_by_itag),
+        )
+    except Exception as local_api_error:
+        logging.warning(
+            "Invidious local=true API fetch failed; continuing with other paths: error=%s",
+            local_api_error,
+        )
+
     base_path = out_template.replace(".%(ext)s", "")
     expected = f"{base_path}.mp3"
     errors: list[str] = []
@@ -682,82 +704,92 @@ def _run_invidious_mp3_sync(
         raw_path = f"{base_path}.invidious-{index}.{_invidious_raw_extension(stream)}"
         try:
             itag = str(stream.get("itag") or "").strip()
-            if video_id and itag.isdigit():
-                local_media_url = _invidious_latest_version_url(
-                    api_url,
-                    video_id,
-                    itag,
+            source_candidates: list[tuple[str, str, bool]] = []
+
+            local_entry = local_streams_by_itag.get(itag)
+            if local_entry is not None:
+                local_stream, local_api_url = local_entry
+                local_url = urljoin(
+                    f"{local_api_url.rstrip('/')}/",
+                    str(local_stream["url"]),
                 )
-                logging.info(
-                    "Trying Invidious local audio proxy: instance=%s stream=%s/%s itag=%s",
-                    api_url,
-                    index,
-                    len(streams),
-                    itag,
-                )
-                try:
-                    total = _download_invidious_source(
-                        local_media_url,
-                        raw_path,
-                        use_youtube_proxy=False,
+                local_host = (urlparse(local_api_url).hostname or "").lower()
+                media_host = (urlparse(local_url).hostname or "").lower()
+                source_candidates.append(
+                    (
+                        "api-local",
+                        local_url,
+                        bool(media_host and media_host != local_host),
                     )
-                    _validate_audio_source(raw_path)
-                except Exception as local_error:
-                    logging.warning(
-                        "Invidious local audio proxy failed: instance=%s stream=%s/%s itag=%s error=%s",
+                )
+
+            if video_id and itag.isdigit():
+                source_candidates.append(
+                    (
+                        "latest-version",
+                        _invidious_latest_version_url(api_url, video_id, itag),
+                        False,
+                    )
+                )
+
+            source_candidates.append(
+                (
+                    "signed-warp",
+                    urljoin(f"{api_url.rstrip('/')}/", str(stream["url"])),
+                    True,
+                )
+            )
+
+            total = 0
+            selected_source = ""
+            candidate_errors: list[str] = []
+            for source_name, media_url, use_youtube_proxy in source_candidates:
+                parsed = urlparse(media_url)
+                media_host = (parsed.hostname or "").lower()
+                if parsed.scheme != "https" or not media_host:
+                    candidate_errors.append(f"{source_name}: non-HTTPS media URL")
+                    continue
+                if media_host in {"localhost", "127.0.0.1", "::1"}:
+                    candidate_errors.append(f"{source_name}: unsafe local media URL")
+                    continue
+
+                try:
+                    logging.info(
+                        "Trying Invidious audio source: source=%s instance=%s stream=%s/%s itag=%s",
+                        source_name,
                         api_url,
                         index,
                         len(streams),
-                        itag,
-                        local_error,
+                        itag or "unknown",
+                    )
+                    total = _download_invidious_source(
+                        media_url,
+                        raw_path,
+                        use_youtube_proxy=use_youtube_proxy,
+                    )
+                    _validate_audio_source(raw_path)
+                    selected_source = source_name
+                    break
+                except Exception as source_error:
+                    candidate_errors.append(f"{source_name}: {source_error}")
+                    logging.warning(
+                        "Invidious audio source failed: source=%s instance=%s stream=%s/%s itag=%s error=%s",
+                        source_name,
+                        api_url,
+                        index,
+                        len(streams),
+                        itag or "unknown",
+                        source_error,
                     )
                     try:
                         os.remove(raw_path)
                     except OSError:
                         pass
 
-                    media_url = urljoin(f"{api_url}/", str(stream["url"]))
-                    parsed = urlparse(media_url)
-                    media_host = (parsed.hostname or "").lower()
-                    if parsed.scheme != "https" or not media_host:
-                        raise MusicDownloadError(
-                            "Invidious returned a non-HTTPS signed media URL"
-                        ) from local_error
-                    if media_host in {"localhost", "127.0.0.1", "::1"}:
-                        raise MusicDownloadError(
-                            "Invidious returned unsafe local signed media URL"
-                        ) from local_error
-
-                    logging.info(
-                        "Retrying Invidious signed audio via YouTube proxy: instance=%s stream=%s/%s itag=%s",
-                        api_url,
-                        index,
-                        len(streams),
-                        itag,
-                    )
-                    total = _download_invidious_source(
-                        media_url,
-                        raw_path,
-                        use_youtube_proxy=True,
-                    )
-                    _validate_audio_source(raw_path)
-            else:
-                media_url = urljoin(f"{api_url}/", str(stream["url"]))
-                parsed = urlparse(media_url)
-                media_host = (parsed.hostname or "").lower()
-                if parsed.scheme != "https" or not media_host:
-                    raise MusicDownloadError("Invidious returned a non-HTTPS media URL")
-                if media_host in {"localhost", "127.0.0.1", "::1"}:
-                    raise MusicDownloadError("Invidious returned unsafe local media URL")
-
-                logging.info(
-                    "Trying Invidious signed audio stream: instance=%s stream=%s/%s",
-                    api_url,
-                    index,
-                    len(streams),
+            if not selected_source:
+                raise MusicDownloadError(
+                    "All Invidious source paths failed: " + " | ".join(candidate_errors)
                 )
-                total = _download_invidious_source(media_url, raw_path)
-                _validate_audio_source(raw_path)
 
             process = subprocess.run(
                 [
@@ -792,8 +824,9 @@ def _run_invidious_mp3_sync(
                 )
 
             logging.info(
-                "Invidious signed YouTube audio succeeded: instance=%s source_bytes=%s stream=%s/%s",
+                "Invidious YouTube audio succeeded: instance=%s source=%s source_bytes=%s stream=%s/%s",
                 api_url,
+                selected_source,
                 total,
                 index,
                 len(streams),
