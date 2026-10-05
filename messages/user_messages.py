@@ -304,8 +304,7 @@ def help_message(bot_username: str | None = None) -> str:
         "Jika audio terlalu panjang untuk satu fail pada 128 kbps, bot split kepada beberapa MP3 tanpa turunkan quality lagi.\n\n"
         "<b>Nama audio sosial</b>\n"
         "Untuk TikTok, Reels, Threads dan X, bot cuba guna nama sound sebenar. "
-        "Jika nama sound tak tersedia, fallback ialah <code>Original sound — @username</code>.\n\n"
-        f"Inline mode masih tersedia melalui <code>@{username} [link]</code>."
+        "Jika nama sound tak tersedia, fallback ialah <code>Original sound — @username</code>."
     )
 
 
