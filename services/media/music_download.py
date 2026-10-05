@@ -26,6 +26,7 @@ BITRATE_CHOICES_KBPS = (320, 256, 224, 192, 160, 128)
 MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
+MUSIC_AUDIO_CACHE_VARIANT = "music_adaptive_mp3_v1"
 PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
     ("android_vr", "18/bestaudio/best"),
@@ -70,6 +71,13 @@ class MusicDownloadResult:
 
 class MusicDownloadError(RuntimeError):
     pass
+
+
+def build_music_cache_key(source_url: str) -> str:
+    clean_url = (source_url or "").strip()
+    if not clean_url:
+        raise ValueError("source_url must not be empty")
+    return f"{clean_url}#{MUSIC_AUDIO_CACHE_VARIANT}"
 
 
 def _clean_text(value: object, fallback: str = "Audio", *, limit: int = 120) -> str:
