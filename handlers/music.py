@@ -195,7 +195,7 @@ async def process_music_link(
     if service_name not in MUSIC_LINK_SERVICES:
         return
 
-    business_id = message.business_connection_id
+    business_id = getattr(message, "business_connection_id", None)
     if await should_skip_duplicate_business_message(
         message,
         bot,
