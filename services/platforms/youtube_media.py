@@ -93,6 +93,11 @@ def _parse_cookies_from_browser(value: str) -> tuple[str, Optional[str], Optiona
 
 def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     options = {**YTDLP_SPEED_OPTS}
+    verbose_flag = (os.getenv("YTDLP_VERBOSE") or "").strip().lower()
+    if verbose_flag in {"1", "true", "yes", "on"}:
+        options["verbose"] = True
+        options["quiet"] = False
+        options["no_warnings"] = False
 
     sleep_requests = _read_float_env("YTDLP_YOUTUBE_SLEEP_REQUESTS_SECONDS")
     if sleep_requests is not None:
@@ -132,6 +137,14 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
         extractor_args.setdefault("youtubepot-bgutilscript", {})["server_home"] = [
             pot_server_home
         ]
+        pot_base_url = (
+            os.getenv("YTDLP_YOUTUBE_POT_BASE_URL")
+            or "http://127.0.0.1:4416"
+        ).strip()
+        if pot_base_url:
+            extractor_args.setdefault("youtubepot-bgutilhttp", {})["base_url"] = [
+                pot_base_url
+            ]
 
     override_extractor_args = overrides.pop("extractor_args", None)
     if isinstance(override_extractor_args, dict):
