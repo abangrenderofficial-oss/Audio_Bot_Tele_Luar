@@ -287,7 +287,7 @@ def category_settings_text(category: str) -> str:
 
 
 def help_message(bot_username: str | None = None) -> str:
-    username = bot_username or "MusicBot"
+    del bot_username
     return (
         "<b>🎵 MP3 Music Bot — Help</b>\n\n"
         "Paste satu link public dan bot akan cuba ambil audio terus sebagai MP3.\n\n"
