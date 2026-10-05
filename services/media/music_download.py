@@ -365,14 +365,36 @@ def _run_ytdlp_mp3_once(
 
 
 def _configured_piped_api_urls() -> list[str]:
+    # Keep YouTube relay routing deterministic. Render still has older Piped
+    # values in its environment, so prefer the currently maintained public
+    # endpoints first and only append configured legacy endpoints afterwards.
+    preferred = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.leptons.xyz",
+        "https://pipedapi.nosebs.ru",
+        # Compatibility relays kept after the maintained list. These are only
+        # tried when the current public relays are unavailable.
+        "https://piped-api.garudalinux.org",
+        "https://pipedapi.rivo.lol",
+        "https://pipedapi.syncpundit.io",
+        "https://api-piped.mha.fi",
+    ]
+
     raw = (os.getenv("PIPED_API_URLS") or "").strip()
-    if not raw:
-        return []
-    return [
+    configured = [
         item.strip().rstrip("/")
         for item in re.split(r"[,;\s]+", raw)
         if item.strip()
     ]
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in [*preferred, *configured]:
+        normalized = item.rstrip("/")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
 
 
 def _configured_invidious_api_urls() -> list[str]:
@@ -1587,6 +1609,26 @@ async def _download_mp3(
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
     if source == "youtube":
+        # Render/WARP/cookies/PO-token has been proven to hit youtube.login on
+        # the real Sesi Potret self-test. In low-memory mode use an external
+        # media relay only; do not silently fall back to the blocked Render IP.
+        if _youtube_low_memory_mode():
+            logging.info(
+                "YouTube relay-only mode: bypassing worker/Invidious/direct yt-dlp"
+            )
+            try:
+                return await asyncio.to_thread(
+                    _run_piped_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                )
+            except Exception as relay_error:
+                _clear_ytdlp_outputs(out_template)
+                raise MusicDownloadError(
+                    f"YouTube Piped relay path exhausted: {relay_error}"
+                ) from relay_error
+
         worker_error: Exception | None = None
 
         if _youtube_worker_configured():
