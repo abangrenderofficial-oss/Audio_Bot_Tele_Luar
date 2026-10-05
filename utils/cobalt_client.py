@@ -18,6 +18,10 @@ class _CobaltRetryableError(Exception):
 
 _RETRYABLE_ERROR_CODES = {
     "error.api.fetch.empty",
+    # Cobalt can briefly report this while its YouTube session generator is
+    # still warming up after a deploy. Retrying avoids falling back to the
+    # direct yt-dlp path before poToken/visitor_data are ready.
+    "error.api.youtube.no_session_tokens",
 }
 
 
