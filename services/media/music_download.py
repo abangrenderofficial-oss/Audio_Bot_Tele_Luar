@@ -24,6 +24,7 @@ MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
 YOUTUBE_PUBLIC_FALLBACK_CLIENTS = (
+    "mweb",
     "android_vr",
     "tv_simply",
     "web_embedded",
