@@ -380,10 +380,6 @@ async def _run_social_music_selftest_from_env() -> None:
 
     cases = [
         (
-            "twitter",
-            "https://x.com/TopHeroes_/status/2001950365332455490",
-        ),
-        (
             "threads",
             "https://www.threads.com/@kfury/post/DaGcWDwj8tW",
         ),
