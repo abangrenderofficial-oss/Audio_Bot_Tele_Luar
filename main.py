@@ -53,12 +53,17 @@ async def _music_cache_keepalive_loop():
     from services.storage.music_cache import warm_music_cache
 
     while True:
-        await asyncio.sleep(180)
         try:
-            ok = await warm_music_cache(timeout_seconds=6.0)
-            logging.debug("Music cache keepalive: ok=%s", ok)
+            started = asyncio.get_running_loop().time()
+            ok = await warm_music_cache(timeout_seconds=12.0)
+            logging.info(
+                "Music cache keepalive: ok=%s seconds=%.2f",
+                ok,
+                asyncio.get_running_loop().time() - started,
+            )
         except Exception as exc:
             logging.debug("Music cache keepalive failed: %s", exc)
+        await asyncio.sleep(180)
 
 
 @dataclass(slots=True)
@@ -427,21 +432,6 @@ async def main():
                 "[STARTUP] Storage initialized: %s",
                 "PostgreSQL" if DATABASE_URL else "memory (no external database)",
             )
-
-            try:
-                from services.storage.music_cache import warm_music_cache
-                cache_warm_started = asyncio.get_running_loop().time()
-                cache_warm_ok = await warm_music_cache(timeout_seconds=8.0)
-                logging.info(
-                    "[STARTUP] Persistent music cache warm: ok=%s seconds=%.2f",
-                    cache_warm_ok,
-                    asyncio.get_running_loop().time() - cache_warm_started,
-                )
-            except Exception as exc:
-                logging.warning(
-                    "[STARTUP] Persistent music cache warm failed: %s",
-                    exc,
-                )
 
             if DATABASE_URL or (MEASUREMENT_ID and API_SECRET):
                 await start_analytics_workers()
