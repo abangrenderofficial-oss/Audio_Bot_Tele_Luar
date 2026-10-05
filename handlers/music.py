@@ -18,10 +18,12 @@ from handlers.utils import (
     build_rate_limit_text,
     get_bot_avatar_thumbnail,
     get_bot_url,
+    get_bot_username,
     get_message_text,
     load_user_settings,
     maybe_delete_user_message,
     react_to_message,
+    safe_answer_inline_query,
     safe_delete_message,
     safe_edit_text,
     send_chat_action_if_needed,
@@ -32,6 +34,7 @@ from services.download.queue import (
     QueueRateLimitError,
     get_download_queue,
 )
+from services.inline.album_links import create_inline_album_request
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
@@ -63,6 +66,54 @@ MUSIC_LINK_SERVICES = frozenset(
 def _music_link_filter(message: types.Message) -> bool:
     detected = extract_supported_link(get_message_text(message))
     return bool(detected and detected[0] in MUSIC_LINK_SERVICES)
+
+
+def _music_inline_filter(query: types.InlineQuery) -> bool:
+    detected = extract_supported_link(getattr(query, "query", "") or "")
+    return bool(detected and detected[0] in MUSIC_LINK_SERVICES)
+
+
+@router.inline_query(_music_inline_filter)
+async def redirect_music_inline_to_private(query: types.InlineQuery) -> None:
+    detected = extract_supported_link(query.query or "")
+    if not detected:
+        return
+    service_name, source_url = detected
+    token = create_inline_album_request(
+        query.from_user.id,
+        service_name,
+        source_url,
+    )
+    bot_username = await get_bot_username(bot)
+    deep_link = f"https://t.me/{bot_username}?start=dl_{token}"
+    result = types.InlineQueryResultArticle(
+        id=f"music_{service_name}_{token}",
+        title="🎵 Download MP3",
+        description="Open MP3 Music Bot to convert this link.",
+        input_message_content=types.InputTextMessageContent(
+            message_text=(
+                "🎵 <b>MP3 Music Bot</b>\n\n"
+                "Tap the button below to convert this link to MP3."
+            ),
+            parse_mode="HTML",
+        ),
+        reply_markup=types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text="🎧 Open MP3 Music Bot",
+                        url=deep_link,
+                    )
+                ]
+            ]
+        ),
+    )
+    await safe_answer_inline_query(
+        query,
+        [result],
+        cache_time=1,
+        is_personal=True,
+    )
 
 
 def _friendly_music_error(exc: Exception) -> str:
