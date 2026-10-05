@@ -413,19 +413,39 @@ async def test_process_pending_message_dispatches_threads(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_process_pending_message_dispatches_youtube_music(monkeypatch):
+async def test_process_pending_message_dispatches_youtube_to_music_bot(monkeypatch):
     message = DummyMessage()
     message.text = "https://music.youtube.com/watch?v=abc123"
-    download_music = AsyncMock()
-    download_video = AsyncMock()
+    process_music_link = AsyncMock()
 
-    monkeypatch.setattr(handlers.youtube, "download_music", download_music)
-    monkeypatch.setattr(handlers.youtube, "download_video", download_video)
+    monkeypatch.setattr(handlers.music, "process_music_link", process_music_link)
 
     await user._process_pending_message(message)
 
-    download_music.assert_awaited_once_with(message, direct_url="https://music.youtube.com/watch?v=abc123")
-    download_video.assert_not_awaited()
+    process_music_link.assert_awaited_once_with(
+        message,
+        service="youtube",
+        url="https://music.youtube.com/watch?v=abc123",
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_supported_social_link_dispatches_to_music_bot(monkeypatch):
+    message = DummyMessage()
+    process_music_link = AsyncMock()
+    monkeypatch.setattr(handlers.music, "process_music_link", process_music_link)
+
+    await media_download._process_supported_link(
+        message,
+        "tiktok",
+        "https://www.tiktok.com/@demo/video/1",
+    )
+
+    process_music_link.assert_awaited_once_with(
+        message,
+        service="tiktok",
+        url="https://www.tiktok.com/@demo/video/1",
+    )
 
 
 @pytest.mark.asyncio
