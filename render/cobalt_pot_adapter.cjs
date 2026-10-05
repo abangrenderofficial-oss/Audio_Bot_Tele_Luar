@@ -980,6 +980,109 @@ async function streamYoutubeWorkerAudio(videoUrl, cookiesText, response) {
   }
 }
 
+function telegramText(value, fallback = "Audio", max = 64) {
+  const text = String(value || fallback)
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (text || fallback).slice(0, max);
+}
+
+function telegramFilename(value, ext) {
+  const stem = telegramText(value, "Audio", 96)
+    .replace(/[\\/:*?"<>|]+/g, " ")
+    .replace(/\.+$/g, "")
+    .trim() || "Audio";
+  return `${stem}.${ext}`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function sendWorkerAudioToTelegram({
+  botToken,
+  chatId,
+  filePath,
+  title,
+  performer,
+  duration,
+  businessConnectionId,
+}) {
+  if (!(await validateTelegramBotToken(botToken))) {
+    throw new Error("invalid Telegram bot token");
+  }
+
+  const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
+  if (!["m4a", "mp4"].includes(ext)) {
+    throw new Error(`fast Telegram audio requires m4a/mp4 source, got ${ext || "unknown"}`);
+  }
+
+  const stat = fs.statSync(filePath);
+  if (stat.size <= 0 || stat.size > 49 * 1024 * 1024) {
+    throw new Error("fast Telegram audio file is outside safe size");
+  }
+
+  const mime = "audio/mp4";
+  const bytes = fs.readFileSync(filePath);
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append(
+    "audio",
+    new Blob([bytes], { type: mime }),
+    telegramFilename(title, "m4a")
+  );
+  form.append("title", telegramText(title, "Audio", 64));
+  form.append("performer", telegramText(performer, "YouTube", 64));
+  if (Number(duration) > 0) {
+    form.append("duration", String(Math.round(Number(duration))));
+  }
+  form.append(
+    "caption",
+    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\nOriginal Quality`
+  );
+  form.append("parse_mode", "HTML");
+  if (businessConnectionId) {
+    form.append("business_connection_id", String(businessConnectionId));
+  }
+
+  const started = Date.now();
+  const tgResponse = await fetch(
+    `https://api.telegram.org/bot${botToken}/sendAudio`,
+    {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(120000),
+    }
+  );
+  const raw = await tgResponse.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+
+  if (!tgResponse.ok || !data?.ok || !data?.result?.audio?.file_id) {
+    throw new Error(
+      `Telegram sendAudio failed status=${tgResponse.status}: ${String(
+        data?.description || raw || "unknown"
+      ).slice(0, 500)}`
+    );
+  }
+
+  console.log(
+    `[YOUTUBE-WORKER] Telegram direct send ready bytes=${stat.size} ms=${Date.now() - started}`
+  );
+
+  return {
+    message_id: data.result.message_id,
+    file_id: data.result.audio.file_id,
+    file_unique_id: data.result.audio.file_unique_id || null,
+    file_size: data.result.audio.file_size || stat.size,
+    duration: data.result.audio.duration || null,
+  };
+}
+
 function enqueueYoutubeWorker(task) {
   const run = youtubeWorkerTail.then(task, task);
   youtubeWorkerTail = run.catch(() => {});
@@ -1031,6 +1134,72 @@ const server = http.createServer(async (request, response) => {
       "content-length": Buffer.byteLength(payload),
     });
     response.end(payload);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/telegram-audio") {
+    if (!(await workerAuthorized(request))) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+
+    let filePath = null;
+    try {
+      const body = await readJsonBody(request);
+      const videoUrl = String(body?.url || "").trim();
+      const cookiesText = String(body?.cookies || "");
+      const botToken = String(body?.telegram_bot_token || "").trim();
+      const chatId = String(body?.chat_id || "").trim();
+
+      if (!isAllowedYoutubeUrl(videoUrl)) throw new Error("invalid YouTube URL");
+      if (!/^-?\d+$/.test(chatId)) throw new Error("invalid Telegram chat id");
+      if (!/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
+        throw new Error("invalid Telegram bot token format");
+      }
+
+      console.log("[YOUTUBE-WORKER] direct Telegram audio start");
+      filePath = await enqueueYoutubeWorker(() =>
+        runYoutubeWorkerAudio(videoUrl, cookiesText)
+      );
+
+      const sent = await sendWorkerAudioToTelegram({
+        botToken,
+        chatId,
+        filePath,
+        title: body?.title,
+        performer: body?.performer,
+        duration: body?.duration,
+        businessConnectionId: body?.business_connection_id,
+      });
+
+      const payload = JSON.stringify({ ok: true, ...sent });
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+        "cache-control": "no-store",
+      });
+      response.end(payload);
+    } catch (error) {
+      console.error(
+        "[YOUTUBE-WORKER] direct Telegram audio failed:",
+        String(error?.message || error).slice(0, 1500)
+      );
+      if (!response.headersSent) {
+        const payload = JSON.stringify({
+          error: error?.message || "direct Telegram audio unavailable",
+        });
+        response.writeHead(502, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        });
+        response.end(payload);
+      }
+    } finally {
+      if (filePath) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+      }
+    }
     return;
   }
 
