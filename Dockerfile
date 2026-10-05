@@ -62,7 +62,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gzip \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app appuser
+    && adduser --system --ingroup appgroup --home /app appuser \
+    && usermod -a -G 1000 appuser
 
 RUN set -eux; \
     case "$TARGETARCH" in \
