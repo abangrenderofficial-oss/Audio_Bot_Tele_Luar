@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+
+// External worker deployment marker: keep YouTube extraction off Render egress.
 import { once } from "node:events";
 import { Innertube, UniversalCache } from "youtubei.js";
 
