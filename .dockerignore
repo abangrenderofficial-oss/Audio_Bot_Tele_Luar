@@ -25,3 +25,5 @@ build/
 !README.md
 .runtime_state.json
 profiling/
+youtube.txt
+cookies/youtube.txt
