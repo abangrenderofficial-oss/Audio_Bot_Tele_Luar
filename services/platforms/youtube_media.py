@@ -210,7 +210,7 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
 
     youtube_args = extractor_args.get("youtube", {})
     selected_clients = youtube_args.get("player_client", [])
-    if "mweb" in selected_clients:
+    if any(client in {"mweb", "web_creator"} for client in selected_clients):
         youtube_args["fetch_pot"] = ["always"]
         youtube_args["pot_trace"] = ["true"]
         extractor_args["youtube"] = youtube_args
