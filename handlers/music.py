@@ -231,13 +231,24 @@ async def process_music_link(
                     build_queue_status("MP3 conversion", ticket),
                 )
 
-        result = await get_download_queue().submit(
-            lambda: download_music_files(
+        async def _run_conversion() -> MusicDownloadResult:
+            if status_message:
+                await safe_edit_text(
+                    status_message,
+                    (
+                        f"🎧 {metadata.title}\n\n"
+                        f"Downloading audio • {plan.bitrate_kbps} kbps..."
+                    ),
+                )
+            return await download_music_files(
                 source_url,
                 metadata=metadata,
                 output_dir=OUTPUT_DIR,
                 job_id=job_id,
-            ),
+            )
+
+        result = await get_download_queue().submit(
+            _run_conversion,
             priority=30,
             source=f"{service_name}_audio",
             user_id=message.from_user.id if message.from_user else None,
