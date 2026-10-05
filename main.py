@@ -346,7 +346,7 @@ async def send_analytics(user_id, chat_type, action_name):
 
 async def _run_music_selftest_from_env() -> None:
     url = (os.getenv("MUSIC_SELFTEST_URL") or "").strip()
-    if not url:
+    if not url or url.lower() in {"0", "off", "false", "disabled"}:
         return
 
     from services.media.music_download import (
