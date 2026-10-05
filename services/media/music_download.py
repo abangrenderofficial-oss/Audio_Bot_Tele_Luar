@@ -1399,6 +1399,133 @@ def _youtube_worker_cookie_text() -> str:
     return ""
 
 
+def _run_youtube_worker_stream_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    base_url = _youtube_worker_base_url()
+    api_key = _youtube_worker_auth_token()
+    if not base_url or not api_key:
+        raise MusicDownloadError("Isolated YouTube worker is not configured")
+
+    cookies_text = _youtube_worker_cookie_text()
+    base_path = out_template.replace(".%(ext)s", "")
+    expected = f"{base_path}.mp3"
+    total = 0
+    started = time.perf_counter()
+
+    ffmpeg = subprocess.Popen(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:a:0?",
+            "-vn",
+            "-ac",
+            "2",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            f"{int(bitrate_kbps)}k",
+            "-compression_level",
+            "7",
+            expected,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        if ffmpeg.stdin is None:
+            raise MusicDownloadError("FFmpeg stream stdin is unavailable")
+
+        with httpx.Client(
+            timeout=httpx.Timeout(150.0, connect=20.0),
+            follow_redirects=True,
+        ) as client:
+            with client.stream(
+                "POST",
+                f"{base_url}/audio-stream",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/octet-stream,audio/*",
+                    "User-Agent": "AbangRender-MusicBot/1.0",
+                },
+                json={"url": url, "cookies": cookies_text},
+            ) as response:
+                if response.status_code != 200:
+                    error_body = response.read().decode("utf-8", errors="replace")
+                    raise MusicDownloadError(
+                        f"YouTube stream worker returned HTTP {response.status_code}: "
+                        f"{error_body[-1000:]}"
+                    )
+
+                content_type = (response.headers.get("content-type") or "").lower()
+                if content_type.startswith("text/") or "json" in content_type:
+                    raise MusicDownloadError(
+                        "YouTube stream worker returned non-media content: "
+                        f"{content_type or 'unknown'}"
+                    )
+
+                for chunk in response.iter_bytes(256 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > 150 * 1024 * 1024:
+                        raise MusicDownloadError(
+                            "YouTube stream worker audio exceeded safety limit"
+                        )
+                    ffmpeg.stdin.write(chunk)
+
+        ffmpeg.stdin.close()
+        stderr_bytes = ffmpeg.stderr.read() if ffmpeg.stderr is not None else b""
+        returncode = ffmpeg.wait(timeout=240)
+        if returncode != 0 or not os.path.isfile(expected):
+            error_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            raise MusicDownloadError(
+                "YouTube stream ffmpeg conversion failed"
+                + (f": {error_text[-500:]}" if error_text else "")
+            )
+        if total <= 0:
+            raise MusicDownloadError("YouTube stream worker returned empty audio")
+
+        logging.info(
+            "YouTube worker timing: stage=stream_transcode seconds=%.2f bytes=%s",
+            time.perf_counter() - started,
+            total,
+        )
+        return expected
+    except Exception:
+        try:
+            if ffmpeg.stdin is not None and not ffmpeg.stdin.closed:
+                ffmpeg.stdin.close()
+        except Exception:
+            pass
+        if ffmpeg.poll() is None:
+            try:
+                ffmpeg.kill()
+            except Exception:
+                pass
+            try:
+                ffmpeg.wait(timeout=5)
+            except Exception:
+                pass
+        try:
+            os.remove(expected)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        raise
+
+
 def _run_youtube_worker_mp3_sync(
     url: str,
     out_template: str,
@@ -1416,6 +1543,25 @@ def _run_youtube_worker_mp3_sync(
     total = 0
 
     try:
+        try:
+            logging.info("Trying streaming YouTube audio worker")
+            return _run_youtube_worker_stream_mp3_sync(
+                url,
+                out_template,
+                bitrate_kbps,
+            )
+        except Exception as stream_error:
+            logging.warning(
+                "Streaming YouTube worker failed; falling back to buffered worker: error=%s",
+                stream_error,
+            )
+            try:
+                os.remove(expected)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
         logging.info("Trying external YouTube audio worker")
         transfer_started = time.perf_counter()
         with httpx.Client(
