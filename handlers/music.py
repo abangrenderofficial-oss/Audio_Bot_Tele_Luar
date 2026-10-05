@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
+import time
 from typing import Optional
 
 from aiogram import Router, types
@@ -243,9 +245,15 @@ async def process_music_link(
                 "🎧 Sedang baca audio dan metadata..."
             )
 
+        stage_started = time.perf_counter()
         metadata = await fetch_music_metadata(
             source_url,
             source=service_name,
+        )
+        logging.info(
+            "Music timing: stage=metadata seconds=%.2f source=%s",
+            time.perf_counter() - stage_started,
+            service_name,
         )
         plan = make_music_plan(metadata.duration)
 
@@ -323,6 +331,7 @@ async def process_music_link(
                 job_id=job_id,
             )
 
+        stage_started = time.perf_counter()
         result = await get_download_queue().submit(
             _run_conversion,
             priority=30,
@@ -331,6 +340,12 @@ async def process_music_link(
             chat_id=message.chat.id,
             request_id=job_id,
             on_queued=_on_queued,
+        )
+        logging.info(
+            "Music timing: stage=download_convert seconds=%.2f source=%s bytes=%s",
+            time.perf_counter() - stage_started,
+            service_name,
+            sum(os.path.getsize(path) for path in result.paths if os.path.isfile(path)),
         )
 
         await safe_edit_text(status_message, bm.uploading_status())
@@ -359,6 +374,7 @@ async def process_music_link(
                 caption = f"🎵 {html.escape(metadata.title)}\n{result.bitrate_kbps} kbps"
                 duration = metadata.duration
 
+            stage_started = time.perf_counter()
             prepared = await prepare_mp3_metadata(
                 path,
                 {
@@ -367,6 +383,12 @@ async def process_music_link(
                     "thumbnail": metadata.thumbnail,
                     "source_url": source_url,
                 },
+            )
+            logging.info(
+                "Music timing: stage=tag_cover seconds=%.2f part=%s/%s",
+                time.perf_counter() - stage_started,
+                index,
+                total_parts,
             )
             try:
                 audio_thumbnail = (
@@ -377,6 +399,7 @@ async def process_music_link(
                     if prepared.thumbnail_path
                     else bot_avatar
                 )
+                upload_started = time.perf_counter()
                 sent = await send_audio_with_thumbnail(
                     message.reply_audio,
                     audio=FSInputFile(
@@ -392,6 +415,13 @@ async def process_music_link(
                     duration=duration,
                     embed_thumbnail=False,
                     parse_mode="HTML",
+                )
+                logging.info(
+                    "Music timing: stage=telegram_upload seconds=%.2f part=%s/%s bytes=%s",
+                    time.perf_counter() - upload_started,
+                    index,
+                    total_parts,
+                    os.path.getsize(path) if os.path.isfile(path) else 0,
                 )
             finally:
                 prepared.cleanup()
