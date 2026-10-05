@@ -266,6 +266,43 @@ def test_pick_invidious_audio_stream_prefers_highest_bitrate_audio():
     assert stream["url"] == "https://cdn.example/audio-high"
 
 
+def test_pick_invidious_audio_stream_prefers_mp4_over_higher_bitrate_webm():
+    data = {
+        "adaptiveFormats": [
+            {
+                "url": "https://cdn.example/audio-webm",
+                "type": "audio/webm; codecs=\"opus\"",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 192_000,
+            },
+            {
+                "url": "https://cdn.example/audio-m4a",
+                "type": "audio/mp4; codecs=\"mp4a.40.2\"",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 128_000,
+            },
+        ]
+    }
+
+    stream = music_download._pick_invidious_audio_stream(data)
+
+    assert stream is not None
+    assert stream["url"] == "https://cdn.example/audio-m4a"
+
+
+def test_invidious_media_signature_validation(tmp_path):
+    m4a = tmp_path / "audio.m4a"
+    m4a.write_bytes(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 32)
+    webm = tmp_path / "audio.webm"
+    webm.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 32)
+    html = tmp_path / "error.webm"
+    html.write_bytes(b"<html>proxy error</html>")
+
+    assert music_download._looks_like_invidious_media(str(m4a), "m4a")
+    assert music_download._looks_like_invidious_media(str(webm), "webm")
+    assert not music_download._looks_like_invidious_media(str(html), "webm")
+
+
 def test_extract_invidious_info_maps_video_metadata(monkeypatch):
     monkeypatch.setattr(
         music_download,
