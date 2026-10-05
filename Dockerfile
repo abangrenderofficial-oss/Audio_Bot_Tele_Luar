@@ -81,6 +81,8 @@ new_start = """                browser = await nodriver.start(headless=False,
                                                browser_args=[
                                                    "--proxy-server=socks5://127.0.0.1:1080",
                                                    "--autoplay-policy=no-user-gesture-required",
+                                                   "--no-sandbox",
+                                                   "--disable-setuid-sandbox",
                                                ],
                                                sandbox=False)"""
 if old_start not in s:
