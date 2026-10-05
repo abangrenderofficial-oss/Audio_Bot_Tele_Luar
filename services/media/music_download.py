@@ -30,6 +30,7 @@ MUSIC_AUDIO_CACHE_VARIANT = "music_adaptive_mp3_v1"
 PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 INVIDIOUS_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
+    ("mweb", "bestaudio/best"),
     ("android_vr", "18/bestaudio/best"),
     ("web_embedded", "bestaudio/best"),
     ("tv", "bestaudio/best"),
