@@ -587,13 +587,60 @@ function readJsonBody(request, maxBytes = 2 * 1024 * 1024) {
   });
 }
 
-function workerAuthorized(request) {
-  if (!YOUTUBE_WORKER_API_KEY) return false;
-  const auth = String(request.headers.authorization || "");
-  const expected = `Bearer ${YOUTUBE_WORKER_API_KEY}`;
-  const left = Buffer.from(auth);
-  const right = Buffer.from(expected);
+const EXPECTED_TELEGRAM_BOT_ID = 8700444915;
+const telegramAuthCache = new Map();
+
+function timingSafeTextEqual(leftText, rightText) {
+  const left = Buffer.from(String(leftText || ""));
+  const right = Buffer.from(String(rightText || ""));
   return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+async function validateTelegramBotToken(token) {
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) return false;
+
+  const digest = crypto.createHash("sha256").update(token).digest("hex");
+  const cached = telegramAuthCache.get(digest);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.ok;
+
+  let ok = false;
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/getMe`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (response.ok) {
+      const data = await response.json();
+      ok = Boolean(
+        data?.ok &&
+        Number(data?.result?.id) === EXPECTED_TELEGRAM_BOT_ID
+      );
+    }
+  } catch {}
+
+  telegramAuthCache.set(digest, {
+    ok,
+    expiresAt: now + (ok ? 10 * 60 * 1000 : 30 * 1000),
+  });
+  return ok;
+}
+
+async function workerAuthorized(request) {
+  const auth = String(request.headers.authorization || "");
+  const prefix = "Bearer ";
+  if (!auth.startsWith(prefix)) return false;
+  const token = auth.slice(prefix.length).trim();
+  if (!token) return false;
+
+  if (
+    YOUTUBE_WORKER_API_KEY &&
+    timingSafeTextEqual(token, YOUTUBE_WORKER_API_KEY)
+  ) {
+    return true;
+  }
+
+  return validateTelegramBotToken(token);
 }
 
 function isAllowedYoutubeUrl(value) {
@@ -827,7 +874,7 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && url.pathname === "/audio") {
-    if (!workerAuthorized(request)) {
+    if (!(await workerAuthorized(request))) {
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "unauthorized" }));
       return;
