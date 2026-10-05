@@ -82,7 +82,7 @@ new_start = """                browser = await nodriver.start(headless=False,
                                                    "--proxy-server=socks5://127.0.0.1:1080",
                                                    "--autoplay-policy=no-user-gesture-required",
                                                ],
-                                               sandbox=False)"""
+                                               no_sandbox=True)"""
 if old_start not in s:
     raise SystemExit('official extractor.py nodriver.start layout changed')
 s = s.replace(old_start, new_start, 1)
