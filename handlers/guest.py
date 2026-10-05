@@ -348,8 +348,8 @@ async def handle_guest_message(
         # Summoned directly without a supported link (e.g. @bot, @bot /help, @bot hello)
         article = InlineQueryResultArticle(
             id=f"guest_help_{uuid.uuid4().hex[:8]}",
-            title="MaxLoad — Guest Mode",
-            description="Summon me with a media link to download videos/audio directly here!",
+            title="MP3 Music Bot — Guest Mode",
+            description="Mention bot dengan link music untuk convert audio ke MP3.",
             thumbnail_url=get_inline_service_icon("tiktok"),
             input_message_content=InputTextMessageContent(
                 message_text=bm.guest_help_message(bot_username),
@@ -361,6 +361,20 @@ async def handle_guest_message(
         return
 
     service, url = detected
+    if service == "pinterest":
+        article = InlineQueryResultArticle(
+            id=f"guest_unsupported_{service}_{uuid.uuid4().hex[:8]}",
+            title="Pinterest belum disokong untuk MP3",
+            description="MP3 Music Bot fokus pada sumber audio yang disokong.",
+            thumbnail_url=get_inline_service_icon(service),
+            input_message_content=InputTextMessageContent(
+                message_text=bm.music_unsupported_link(),
+                parse_mode="HTML",
+            ),
+        )
+        await message.answer_guest_query(result=article)
+        return
+
     logging.download_request(
         user_id=user_id,
         username=getattr(user, "username", None),
