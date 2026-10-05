@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import base64
 import os
-from pathlib import Path
-
 import pytest
 
 import container_entrypoint as entrypoint
@@ -36,7 +34,6 @@ def test_prepare_youtube_cookie_env_writes_private_runtime_file(monkeypatch, tmp
     "encoded",
     [
         "not-base64!!!",
-        base64.b64encode(b"").decode("ascii"),
         base64.b64encode(b"not a netscape cookie file\n").decode("ascii"),
     ],
 )
@@ -52,3 +49,12 @@ def test_prepare_youtube_cookie_env_rejects_invalid_secret(monkeypatch, tmp_path
         )
 
     assert not runtime_file.exists()
+
+
+def test_prepare_youtube_cookie_env_ignores_blank_secret(monkeypatch):
+    monkeypatch.setenv(entrypoint.YOUTUBE_COOKIES_B64_ENV, "   ")
+
+    assert entrypoint._prepare_youtube_cookie_env(
+        uid=os.getuid(),
+        gid=os.getgid(),
+    ) is False
