@@ -745,7 +745,6 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
 
   const baseArgs = [
     "--no-playlist",
-    "--no-cache-dir",
     "--no-warnings",
     "--quiet",
     "--socket-timeout", "15",
