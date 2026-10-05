@@ -1581,59 +1581,32 @@ async def _download_mp3(
 ) -> str:
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
-    if source == "youtube":
-        worker_error: Exception | None = None
-
-        if _youtube_worker_configured():
+    if source == "youtube" and _cobalt_music_configured():
+        try:
+            return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
+        except Exception as cobalt_error:
+            logging.warning(
+                "Cobalt YouTube Music primary path failed; using bounded direct fallback: error=%s",
+                cobalt_error,
+            )
+            _clear_ytdlp_outputs(out_template)
             try:
                 return await asyncio.to_thread(
-                    _run_youtube_worker_mp3_sync,
+                    _run_ytdlp_mp3_sync,
                     url,
                     out_template,
                     bitrate_kbps,
+                    source,
                 )
-            except Exception as exc:
-                worker_error = exc
-                logging.warning(
-                    "Isolated WARP YouTube worker failed; trying Guest WPC fallback: error=%s",
-                    exc,
-                )
-                _clear_ytdlp_outputs(out_template)
-        else:
-            logging.warning(
-                "Isolated YouTube worker is not configured; using Guest WPC fallback"
-            )
+            except MusicDownloadError as direct_error:
+                raise MusicDownloadError(
+                    f"Cobalt primary: {cobalt_error}\n--- Direct fallback ---\n{direct_error}"
+                ) from direct_error
 
-        guest_error: Exception | None = None
-        try:
-            return await asyncio.to_thread(
-                _run_guest_wpc_mp3_sync,
-                url,
-                out_template,
-                bitrate_kbps,
-            )
-        except Exception as exc:
-            guest_error = exc
-            logging.warning(
-                "Guest WPC YouTube Music fallback failed; using direct chain: error=%s",
-                exc,
-            )
-            _clear_ytdlp_outputs(out_template)
-
-        try:
-            return await asyncio.to_thread(
-                _run_ytdlp_mp3_sync,
-                url,
-                out_template,
-                bitrate_kbps,
-                source,
-            )
-        except MusicDownloadError as direct_error:
-            raise MusicDownloadError(
-                f"Isolated worker: {worker_error}\n"
-                f"--- Guest WPC fallback ---\n{guest_error}\n"
-                f"--- Direct fallback ---\n{direct_error}"
-            ) from direct_error
+    if source == "youtube":
+        logging.warning(
+            "Cobalt YouTube Music primary path unavailable: COBALT_API_URL/COBALT_API_KEY not configured"
+        )
 
     return await asyncio.to_thread(
         _run_ytdlp_mp3_sync,
