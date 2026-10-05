@@ -431,11 +431,10 @@ def _extract_piped_info_sync(url: str) -> dict[str, Any]:
     )
 
 
-def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
-    api_urls = _configured_invidious_api_urls()
-    if not api_urls:
-        raise MusicDownloadError("Invidious fallback is not configured")
-
+def _fetch_invidious_video_from_instance_sync(
+    url: str,
+    api_url: str,
+) -> dict[str, Any]:
     video_id = _youtube_video_id(url)
     if not video_id:
         raise MusicDownloadError("Unable to extract YouTube video id for Invidious")
@@ -444,31 +443,40 @@ def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
         "Accept": "application/json",
         "User-Agent": "AbangRender-MusicBot/1.0",
     }
-    errors: list[str] = []
+    logging.info("Trying Invidious YouTube API: instance=%s", api_url)
     with httpx.Client(
         timeout=httpx.Timeout(20.0, connect=8.0),
         follow_redirects=True,
     ) as client:
-        for api_url in api_urls:
-            try:
-                logging.info("Trying Invidious YouTube API: instance=%s", api_url)
-                response = client.get(
-                    f"{api_url}/api/v1/videos/{video_id}",
-                    params={"local": "false"},
-                    headers=headers,
-                )
-                response.raise_for_status()
-                data = response.json()
-                if not isinstance(data, dict) or not data.get("title"):
-                    raise MusicDownloadError("Invidious returned incomplete video data")
-                return data, api_url
-            except Exception as exc:
-                errors.append(f"{api_url}: {exc}")
-                logging.warning(
-                    "Invidious YouTube API failed: instance=%s error=%s",
-                    api_url,
-                    exc,
-                )
+        response = client.get(
+            f"{api_url}/api/v1/videos/{video_id}",
+            params={"local": "false"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, dict) or not data.get("title"):
+        raise MusicDownloadError("Invidious returned incomplete video data")
+    return data
+
+
+def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
+    api_urls = _configured_invidious_api_urls()
+    if not api_urls:
+        raise MusicDownloadError("Invidious fallback is not configured")
+
+    errors: list[str] = []
+    for api_url in api_urls:
+        try:
+            return _fetch_invidious_video_from_instance_sync(url, api_url), api_url
+        except Exception as exc:
+            errors.append(f"{api_url}: {exc}")
+            logging.warning(
+                "Invidious YouTube API failed: instance=%s error=%s",
+                api_url,
+                exc,
+            )
 
     raise MusicDownloadError(
         "Invidious YouTube API failed\n" + "\n".join(errors)
@@ -663,12 +671,13 @@ def _validate_audio_source(raw_path: str) -> None:
         )
 
 
-def _run_invidious_mp3_sync(
+def _run_invidious_mp3_from_instance_sync(
     url: str,
     out_template: str,
     bitrate_kbps: int,
+    api_url: str,
 ) -> str:
-    data, api_url = _fetch_invidious_video_sync(url)
+    data = _fetch_invidious_video_from_instance_sync(url, api_url)
     streams = _invidious_audio_streams(data)
     if not streams:
         raise MusicDownloadError("Invidious returned no usable audio stream")
@@ -823,6 +832,39 @@ def _run_invidious_mp3_sync(
 
     raise MusicDownloadError(
         "Invidious signed audio streams failed\n" + "\n".join(errors)
+    )
+
+
+def _run_invidious_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    api_urls = _configured_invidious_api_urls()
+    if not api_urls:
+        raise MusicDownloadError("Invidious fallback is not configured")
+
+    errors: list[str] = []
+    for api_url in api_urls:
+        _clear_ytdlp_outputs(out_template)
+        try:
+            logging.info("Trying Invidious audio instance: %s", api_url)
+            return _run_invidious_mp3_from_instance_sync(
+                url,
+                out_template,
+                bitrate_kbps,
+                api_url,
+            )
+        except Exception as exc:
+            errors.append(f"{api_url}: {exc}")
+            logging.warning(
+                "Invidious audio instance failed: instance=%s error=%s",
+                api_url,
+                exc,
+            )
+
+    raise MusicDownloadError(
+        "Invidious audio instances exhausted\n" + "\n".join(errors)
     )
 
 
