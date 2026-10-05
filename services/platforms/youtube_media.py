@@ -124,6 +124,27 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     po_token = os.getenv("YTDLP_YOUTUBE_PO_TOKEN")
     if po_token and po_token.strip():
         extractor_args.setdefault("youtube", {})["po_token"] = _split_env_list(po_token)
+
+    pot_server_home = (
+        os.getenv("YTDLP_YOUTUBE_POT_SERVER_HOME") or "/opt/bgutil-pot"
+    ).strip()
+    if pot_server_home and os.path.isdir(pot_server_home):
+        extractor_args.setdefault("youtubepot-bgutilscript", {})["server_home"] = [
+            pot_server_home
+        ]
+
+    override_extractor_args = overrides.pop("extractor_args", None)
+    if isinstance(override_extractor_args, dict):
+        for extractor_name, extractor_values in override_extractor_args.items():
+            if not isinstance(extractor_values, dict):
+                continue
+            target = extractor_args.setdefault(str(extractor_name), {})
+            for key, value in extractor_values.items():
+                if isinstance(value, (list, tuple, set)):
+                    target[str(key)] = [str(item) for item in value]
+                elif value is not None:
+                    target[str(key)] = [str(value)]
+
     if extractor_args:
         options["extractor_args"] = extractor_args
 
