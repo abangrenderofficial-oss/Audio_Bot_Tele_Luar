@@ -150,19 +150,27 @@ def test_build_ytdlp_youtube_options_enables_node_fallback_by_default(monkeypatc
     assert options["js_runtimes"] == {"deno": {}, "node": {}}
 
 
-def test_build_ytdlp_youtube_options_uses_render_secret_cookies_file(monkeypatch, tmp_path):
+def test_build_ytdlp_youtube_options_copies_render_secret_to_writable_runtime(monkeypatch, tmp_path):
     secret_file = tmp_path / "youtube.txt"
-    secret_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    runtime_file = tmp_path / "runtime-youtube.txt"
+    secret_contents = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\ttest\n"
+    secret_file.write_text(secret_contents, encoding="utf-8")
     monkeypatch.delenv("YTDLP_YOUTUBE_COOKIES_FILE", raising=False)
     monkeypatch.delenv("YTDLP_YOUTUBE_COOKIES_FROM_BROWSER", raising=False)
     monkeypatch.setattr(
         "services.platforms.youtube_media.RENDER_YOUTUBE_COOKIES_FILE",
         str(secret_file),
     )
+    monkeypatch.setattr(
+        "services.platforms.youtube_media.RUNTIME_YOUTUBE_COOKIES_FILE",
+        str(runtime_file),
+    )
 
     options = build_ytdlp_youtube_options(skip_download=True)
 
-    assert options["cookiefile"] == str(secret_file)
+    assert options["cookiefile"] == str(runtime_file)
+    assert runtime_file.read_text(encoding="utf-8") == secret_contents
+    assert runtime_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_build_ytdlp_youtube_options_uses_default_cookies_file(monkeypatch, tmp_path):
