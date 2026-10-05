@@ -61,16 +61,18 @@ MUSIC_LINK_SERVICES = frozenset(
         "twitter",
     }
 )
+MUSIC_BLOCKED_SERVICES = frozenset({"pinterest"})
+_MUSIC_ROUTED_SERVICES = MUSIC_LINK_SERVICES | MUSIC_BLOCKED_SERVICES
 
 
 def _music_link_filter(message: types.Message) -> bool:
     detected = extract_supported_link(get_message_text(message))
-    return bool(detected and detected[0] in MUSIC_LINK_SERVICES)
+    return bool(detected and detected[0] in _MUSIC_ROUTED_SERVICES)
 
 
 def _music_inline_filter(query: types.InlineQuery) -> bool:
     detected = extract_supported_link(getattr(query, "query", "") or "")
-    return bool(detected and detected[0] in MUSIC_LINK_SERVICES)
+    return bool(detected and detected[0] in _MUSIC_ROUTED_SERVICES)
 
 
 @router.inline_query(_music_inline_filter)
@@ -79,6 +81,24 @@ async def redirect_music_inline_to_private(query: types.InlineQuery) -> None:
     if not detected:
         return
     service_name, source_url = detected
+    if service_name in MUSIC_BLOCKED_SERVICES:
+        result = types.InlineQueryResultArticle(
+            id=f"music_unsupported_{service_name}_{query.from_user.id}",
+            title="Pinterest belum disokong untuk MP3",
+            description="MP3 Music Bot fokus pada sumber audio yang disokong.",
+            input_message_content=types.InputTextMessageContent(
+                message_text=bm.music_unsupported_link(),
+                parse_mode="HTML",
+            ),
+        )
+        await safe_answer_inline_query(
+            query,
+            [result],
+            cache_time=1,
+            is_personal=True,
+        )
+        return
+
     token = create_inline_album_request(
         query.from_user.id,
         service_name,
@@ -168,6 +188,10 @@ async def process_music_link(
         return
 
     service_name, source_url = detected
+    if service_name in MUSIC_BLOCKED_SERVICES:
+        await message.reply(bm.music_unsupported_link(), parse_mode="HTML")
+        await update_info(message)
+        return
     if service_name not in MUSIC_LINK_SERVICES:
         return
 
