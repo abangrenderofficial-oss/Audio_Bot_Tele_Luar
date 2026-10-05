@@ -411,6 +411,25 @@ async def process_music_link(
                 cached_performer = str(
                     social_cached.get("performer") or service_name.title()
                 )
+                if (
+                    service_name == "instagram"
+                    and re.fullmatch(
+                        r"Original (?:sound|audio) — @\d+",
+                        cached_title,
+                        flags=re.IGNORECASE,
+                    )
+                ):
+                    logging.info(
+                        "Ignoring stale Instagram numeric-title cache: %s",
+                        cached_title,
+                    )
+                    social_cached = None
+
+            if social_cached:
+                cached_title = str(social_cached.get("title") or "Audio")
+                cached_performer = str(
+                    social_cached.get("performer") or service_name.title()
+                )
                 cached_duration = social_cached.get("duration_seconds")
                 try:
                     await safe_edit_text(status_message, bm.uploading_status())
