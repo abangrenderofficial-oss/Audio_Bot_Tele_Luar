@@ -380,16 +380,12 @@ async def _run_social_music_selftest_from_env() -> None:
 
     cases = [
         (
-            "tiktok",
-            "https://www.tiktok.com/@cookierun_dev/video/7039716639834656002",
-        ),
-        (
             "instagram",
-            "https://www.instagram.com/reel/Chunk8-jurw/",
+            "https://www.instagram.com/judith_steiner/reel/DWGga5GgiBK/",
         ),
         (
             "twitter",
-            "https://twitter.com/BTNBrentYarina/status/705235433198714880",
+            "https://twitter.com/starwars/status/665052190608723968",
         ),
         (
             "threads",
