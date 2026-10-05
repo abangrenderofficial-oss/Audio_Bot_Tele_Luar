@@ -32,6 +32,7 @@ MUSIC_AUDIO_CACHE_VARIANT = "music_adaptive_mp3_v1"
 PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 INVIDIOUS_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 COBALT_MAX_SOURCE_BYTES = 150 * 1024 * 1024
+DEFAULT_YOUTUBE_WORKER_URL = "https://abangrender-youtube-session-warp.onrender.com"
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
     ("mweb", "bestaudio/best"),
     ("web_creator", "bestaudio/best"),
@@ -1285,11 +1286,22 @@ def _run_ytdlp_mp3_sync(
         ) from last_error
 
 
-def _youtube_worker_configured() -> bool:
-    return bool(
+def _youtube_worker_base_url() -> str:
+    return (
         (os.getenv("YOUTUBE_WORKER_URL") or "").strip()
-        and (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+        or DEFAULT_YOUTUBE_WORKER_URL
+    ).rstrip("/")
+
+
+def _youtube_worker_auth_token() -> str:
+    return (
+        (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+        or (os.getenv("BOT_TOKEN") or "").strip()
     )
+
+
+def _youtube_worker_configured() -> bool:
+    return bool(_youtube_worker_base_url() and _youtube_worker_auth_token())
 
 
 def _youtube_worker_cookie_text() -> str:
@@ -1317,8 +1329,8 @@ def _run_youtube_worker_mp3_sync(
     out_template: str,
     bitrate_kbps: int,
 ) -> str:
-    base_url = (os.getenv("YOUTUBE_WORKER_URL") or "").strip().rstrip("/")
-    api_key = (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+    base_url = _youtube_worker_base_url()
+    api_key = _youtube_worker_auth_token()
     if not base_url or not api_key:
         raise MusicDownloadError("Isolated YouTube worker is not configured")
 
