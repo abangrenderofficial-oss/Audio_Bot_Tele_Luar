@@ -389,16 +389,20 @@ async def test_process_pending_message_dispatches_soundcloud(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_process_pending_message_dispatches_pinterest(monkeypatch):
+async def test_process_pending_message_routes_pinterest_to_music_bot_rejection(monkeypatch):
     message = DummyMessage()
     message.text = "https://pin.it/demo123"
-    process_pinterest_url = AsyncMock()
+    process_music_link = AsyncMock()
 
-    monkeypatch.setattr(handlers.pinterest, "process_pinterest_url", process_pinterest_url)
+    monkeypatch.setattr(handlers.music, "process_music_link", process_music_link)
 
     await user._process_pending_message(message)
 
-    process_pinterest_url.assert_awaited_once_with(message, url="https://pin.it/demo123")
+    process_music_link.assert_awaited_once_with(
+        message,
+        service="pinterest",
+        url="https://pin.it/demo123",
+    )
 
 
 @pytest.mark.asyncio
