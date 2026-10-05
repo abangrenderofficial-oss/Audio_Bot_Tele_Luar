@@ -316,9 +316,17 @@ def _configured_piped_api_urls() -> list[str]:
         return []
     return [
         item.strip().rstrip("/")
-        for item in re.split(r"[,;\\s]+", raw)
+        for item in re.split(r"[,;\s]+", raw)
         if item.strip()
     ]
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _youtube_low_memory_mode() -> bool:
+    return _env_truthy("YOUTUBE_LOW_MEMORY_MODE")
 
 
 def _youtube_video_id(url: str) -> str | None:
@@ -510,6 +518,21 @@ def _run_ytdlp_mp3_sync(
     bitrate_kbps: int,
     source: str,
 ) -> str:
+    low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
+    piped_first_error: Exception | None = None
+
+    if low_memory_mode and _configured_piped_api_urls():
+        try:
+            logging.info("YouTube low-memory mode: trying Piped before yt-dlp")
+            return _run_piped_mp3_sync(url, out_template, bitrate_kbps)
+        except Exception as exc:
+            piped_first_error = exc
+            _clear_ytdlp_outputs(out_template)
+            logging.warning(
+                "Piped-first YouTube attempt failed; trying one primary yt-dlp request: error=%s",
+                exc,
+            )
+
     try:
         return _run_ytdlp_mp3_once(url, out_template, bitrate_kbps)
     except MusicDownloadError:
@@ -517,12 +540,26 @@ def _run_ytdlp_mp3_sync(
     except Exception as first_error:
         if source != "youtube":
             raise MusicDownloadError(str(first_error)) from first_error
+
+        errors: list[str] = []
+        if piped_first_error is not None:
+            errors.append(f"piped-first: {piped_first_error}")
+        errors.append(f"primary: {first_error}")
+        last_error: Exception = first_error
+
+        if low_memory_mode:
+            logging.warning(
+                "YouTube low-memory mode exhausted without public-client fan-out: error=%s",
+                first_error,
+            )
+            raise MusicDownloadError(
+                "\n--- YouTube low-memory retries ---\n" + "\n".join(errors)
+            ) from last_error
+
         logging.warning(
             "Primary YouTube audio download failed; trying public clients: error=%s",
             first_error,
         )
-        errors = [f"primary: {first_error}"]
-        last_error: Exception = first_error
         for client, format_spec in YOUTUBE_PUBLIC_FALLBACK_PROFILES:
             _clear_ytdlp_outputs(out_template)
             try:
@@ -548,6 +585,7 @@ def _run_ytdlp_mp3_sync(
                     client,
                     fallback_error,
                 )
+
         piped_urls = _configured_piped_api_urls()
         if piped_urls:
             _clear_ytdlp_outputs(out_template)
