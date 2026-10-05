@@ -14,3 +14,4 @@ pillow==12.3.0
 psycopg2-binary==2.9.12
 python-dotenv==1.2.3
 yt-dlp[default]==2026.8.19
+bgutil-ytdlp-pot-provider==2.0.1
