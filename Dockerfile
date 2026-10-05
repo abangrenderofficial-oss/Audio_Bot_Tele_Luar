@@ -129,7 +129,7 @@ old_handler = """    async def _send_handler(self, event: nodriver.cdp.network.R
 """
 new_handler = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
         request = event.request
-        if request.method != 'POST':
+        if request.method != 'POST' or 'youtubei' not in request.url:
             return
 
         post_data = request.post_data
@@ -141,37 +141,44 @@ new_handler = """    async def _send_handler(self, event: nodriver.cdp.network.R
         except (json.JSONDecodeError, TypeError):
             return
 
-        def find_string_key(node, wanted):
-            if isinstance(node, dict):
-                value = node.get(wanted)
-                if isinstance(value, str) and value:
-                    return value
-                for child in node.values():
-                    found = find_string_key(child, wanted)
+        def find_token_fields(value):
+            if isinstance(value, dict):
+                context = value.get('context')
+                integrity = value.get('serviceIntegrityDimensions')
+                if isinstance(context, dict) and isinstance(integrity, dict):
+                    client = context.get('client')
+                    if isinstance(client, dict):
+                        visitor_data = client.get('visitorData')
+                        potoken = integrity.get('poToken')
+                        if visitor_data and potoken:
+                            return visitor_data, potoken
+
+                for nested in value.values():
+                    found = find_token_fields(nested)
                     if found:
                         return found
-            elif isinstance(node, list):
-                for child in node:
-                    found = find_string_key(child, wanted)
+                return None
+
+            if isinstance(value, list):
+                for nested in value:
+                    found = find_token_fields(nested)
                     if found:
                         return found
             return None
 
-        visitor_data = find_string_key(post_data_json, 'visitorData')
-        potoken = find_string_key(post_data_json, 'poToken')
+        from urllib.parse import urlsplit
+        req_path = urlsplit(request.url).path
+        found = find_token_fields(post_data_json)
+        logger.info(
+            f'network diagnostics youtubei_path={req_path} '
+            f'payload_type={type(post_data_json).__name__} '
+            f'has_trusted_session={bool(found)}'
+        )
 
-        if 'youtubei' in request.url:
-            from urllib.parse import urlsplit
-            req_path = urlsplit(request.url).path
-            logger.info(
-                f'network diagnostics youtubei_path={req_path} '
-                f'payload_type={type(post_data_json).__name__} '
-                f'has_visitor={bool(visitor_data)} has_potoken={bool(potoken)}'
-            )
-
-        if not visitor_data or not potoken:
+        if not found:
             return
 
+        visitor_data, potoken = found
         token_info = TokenInfo(
             updated=int(time.time()),
             potoken=potoken,
