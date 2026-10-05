@@ -1019,6 +1019,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     "--fragment-retries", "1",
     "--max-filesize", "150M",
     "--js-runtimes", "node",
+    "--plugin-dirs", path.join(process.cwd(), "render", "social_plugins"),
     "--format", "bestaudio/best",
     "--output", outputTemplate,
     "--print-to-file", "after_move:%(title)s", titlePath,
