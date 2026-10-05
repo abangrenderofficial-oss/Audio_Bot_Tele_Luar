@@ -2,6 +2,8 @@
 
 FROM denoland/deno:2.9.6 AS deno
 
+FROM brainicism/bgutil-ytdlp-pot-provider:2.0.1-deno AS pot_provider
+
 FROM python:3.14-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -57,6 +59,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=deno /usr/bin/deno /usr/local/bin/deno
+COPY --from=pot_provider /app /opt/bgutil-pot
 COPY . .
 
 RUN mkdir -p /app/downloads /app/logs /app/cookies && \
