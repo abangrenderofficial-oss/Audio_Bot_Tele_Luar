@@ -1423,30 +1423,41 @@ async def _download_mp3(
     source: str,
 ) -> str:
     out_template = os.path.join(work_dir, "source.%(ext)s")
-    try:
-        return await asyncio.to_thread(
-            _run_ytdlp_mp3_sync,
-            url,
-            out_template,
-            bitrate_kbps,
-            source,
-        )
-    except MusicDownloadError as first_error:
-        if source != "youtube":
-            raise
-        if not _cobalt_music_configured():
-            logging.warning(
-                "Cobalt YouTube Music fallback unavailable: COBALT_API_URL/COBALT_API_KEY not configured"
-            )
-            raise
 
-        _clear_ytdlp_outputs(out_template)
+    if source == "youtube" and _cobalt_music_configured():
         try:
             return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
         except Exception as cobalt_error:
-            raise MusicDownloadError(
-                f"{first_error}\n--- Cobalt fallback ---\n{cobalt_error}"
-            ) from cobalt_error
+            logging.warning(
+                "Cobalt YouTube Music primary path failed; falling back to direct chain: error=%s",
+                cobalt_error,
+            )
+            _clear_ytdlp_outputs(out_template)
+            try:
+                return await asyncio.to_thread(
+                    _run_ytdlp_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                    source,
+                )
+            except MusicDownloadError as direct_error:
+                raise MusicDownloadError(
+                    f"Cobalt primary: {cobalt_error}\n--- Direct fallback ---\n{direct_error}"
+                ) from direct_error
+
+    if source == "youtube":
+        logging.warning(
+            "Cobalt YouTube Music primary path unavailable: COBALT_API_URL/COBALT_API_KEY not configured"
+        )
+
+    return await asyncio.to_thread(
+        _run_ytdlp_mp3_sync,
+        url,
+        out_template,
+        bitrate_kbps,
+        source,
+    )
 
 
 async def _transcode_to_128k(source_path: str, target_path: str) -> str:
