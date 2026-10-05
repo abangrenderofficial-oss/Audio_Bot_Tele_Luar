@@ -62,7 +62,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gzip \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app appuser
+    && adduser --system --ingroup appgroup --home /app appuser \
+    && (getent group 1000 >/dev/null || addgroup --gid 1000 rendersecrets) \
+    && usermod -a -G "$(getent group 1000 | cut -d: -f1)" appuser
 
 RUN set -eux; \
     case "$TARGETARCH" in \
