@@ -1323,6 +1323,7 @@ def _youtube_worker_base_url() -> str:
 
 
 def _youtube_worker_auth_token() -> str:
+    v3_key = (os.getenv("AR_MUSIC_WORKER_KEY_V3") or "").strip()
     railway_key = (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
     generic_key = (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
     bot_token = (os.getenv("BOT_TOKEN") or "").strip()
@@ -1334,9 +1335,11 @@ def _youtube_worker_auth_token() -> str:
         def _fp(value: str) -> str:
             return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else "-"
         logging.info(
-            "[YOUTUBE-WORKER-AUTH] railway_present=%s railway_len=%s railway_fp=%s "
+            "[YOUTUBE-WORKER-AUTH] v3_present=%s v3_len=%s v3_fp=%s "
+            "railway_present=%s railway_len=%s railway_fp=%s "
             "generic_present=%s generic_len=%s generic_fp=%s "
             "bot_present=%s bot_len=%s bot_fp=%s",
+            bool(v3_key), len(v3_key), _fp(v3_key),
             bool(railway_key), len(railway_key), _fp(railway_key),
             bool(generic_key), len(generic_key), _fp(generic_key),
             bool(bot_token), len(bot_token), _fp(bot_token),
@@ -1344,7 +1347,7 @@ def _youtube_worker_auth_token() -> str:
     except Exception:
         pass
 
-    return railway_key or generic_key or bot_token
+    return v3_key or railway_key or generic_key or bot_token
 
 
 def _youtube_worker_configured() -> bool:
