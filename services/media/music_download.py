@@ -1470,6 +1470,81 @@ async def send_youtube_fast_to_telegram(
     return data
 
 
+async def send_social_fast_to_telegram(
+    url: str,
+    *,
+    source: str,
+    chat_id: int,
+    business_connection_id: str | None = None,
+) -> dict[str, Any]:
+    source = str(source or "").strip().lower()
+    if source not in {"tiktok", "instagram", "threads", "twitter"}:
+        raise MusicDownloadError(f"Unsupported social source: {source}")
+
+    base_url = _youtube_worker_base_url()
+    api_key = _youtube_worker_auth_token()
+    bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+    if not base_url or not api_key or not bot_token:
+        raise MusicDownloadError("Fast social Telegram worker is not configured")
+
+    payload: dict[str, Any] = {
+        "url": url,
+        "source": source,
+        "telegram_bot_token": bot_token,
+        "chat_id": int(chat_id),
+    }
+    if business_connection_id:
+        payload["business_connection_id"] = business_connection_id
+
+    started = time.perf_counter()
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(190.0, connect=20.0),
+        follow_redirects=True,
+    ) as client:
+        response = await client.post(
+            f"{base_url}/social-telegram-audio",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "User-Agent": "AbangRender-MusicBot/1.0",
+            },
+            json=payload,
+        )
+
+    if response.status_code != 200:
+        detail = response.text[-1200:]
+        raise MusicDownloadError(
+            f"Fast social worker returned HTTP {response.status_code}: {detail}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise MusicDownloadError(
+            "Fast social worker returned invalid JSON"
+        ) from exc
+
+    if (
+        not isinstance(data, dict)
+        or not data.get("ok")
+        or not data.get("file_id")
+    ):
+        raise MusicDownloadError(
+            "Fast social worker returned incomplete result: "
+            f"{str(data)[-900:]}"
+        )
+
+    logging.info(
+        "Social fast direct Telegram succeeded: "
+        "source=%s seconds=%.2f file_size=%s quality=%s",
+        source,
+        time.perf_counter() - started,
+        data.get("file_size"),
+        data.get("quality_label"),
+    )
+    return data
+
+
 def _run_youtube_worker_stream_mp3_sync(
     url: str,
     out_template: str,
