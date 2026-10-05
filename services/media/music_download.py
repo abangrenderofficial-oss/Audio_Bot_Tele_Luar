@@ -1394,7 +1394,7 @@ async def _run_cobalt_mp3(
         },
         source="youtube_music",
         timeout=90,
-        attempts=2,
+        attempts=6,
         retry_delay=3.0,
     )
     if not data:
