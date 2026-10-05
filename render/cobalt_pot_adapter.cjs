@@ -810,7 +810,7 @@ async function resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText) {
     "--extractor-args",
     "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
     "--format",
-    "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
+    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--get-url",
   ];
 
@@ -840,10 +840,16 @@ async function resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText) {
       );
       return audioUrl;
     } catch (guestError) {
-      if (!fs.existsSync(cookiePath)) throw guestError;
+      const guestMessage = String(guestError?.message || guestError);
+      if (
+        !fs.existsSync(cookiePath) ||
+        guestMessage.includes("Requested format is not available")
+      ) {
+        throw guestError;
+      }
       console.warn(
         "[YOUTUBE-WORKER] guest URL resolve failed:",
-        String(guestError?.message || guestError).slice(0, 1000)
+        guestMessage.slice(0, 1000)
       );
       const output = await runYoutubeWorkerCapture(
         [...baseArgs, "--cookies", cookiePath, videoUrl],
