@@ -580,8 +580,27 @@ const server = http.createServer(async (request, response) => {
 
 writeRuntimeProxyEnv(false);
 
+function usesRemoteSessionServer() {
+  const value = String(process.env.YOUTUBE_SESSION_SERVER || "").trim();
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return !["127.0.0.1", "localhost", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`[POT-ADAPTER] ready at http://${HOST}:${PORT}`);
+
+  if (usesRemoteSessionServer()) {
+    const timer = setTimeout(() => {
+      stopProviderProcesses();
+      console.log("[POT-ADAPTER] external session server active; released local bgutil memory");
+    }, 10000);
+    timer.unref?.();
+  }
 });
 
 startWarp().catch((error) => {
