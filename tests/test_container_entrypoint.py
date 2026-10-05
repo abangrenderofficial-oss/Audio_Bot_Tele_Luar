@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import container_entrypoint
 
@@ -82,3 +84,41 @@ def test_prepare_youtube_cookie_file_copies_inaccessible_mount(tmp_path, monkeyp
     assert runtime_cookie.read_text(encoding="utf-8") == "# Netscape HTTP Cookie File\n"
     assert runtime_cookie.stat().st_mode & 0o600 == 0o600
     assert container_entrypoint.os.environ["YTDLP_YOUTUBE_COOKIES_FILE"] == str(runtime_cookie)
+
+
+def test_drop_privileges_preserves_supplementary_groups(monkeypatch):
+    fake_user = SimpleNamespace(pw_uid=123, pw_dir="/tmp/app", pw_name="appuser")
+    fake_group = SimpleNamespace(gr_gid=456)
+    calls = {}
+
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwnam=lambda _name: fake_user))
+    monkeypatch.setitem(sys.modules, "grp", SimpleNamespace(getgrnam=lambda _name: fake_group))
+    monkeypatch.setattr(
+        container_entrypoint.os,
+        "getgrouplist",
+        lambda _user_name, primary_gid: [primary_gid, 1000],
+    )
+    monkeypatch.setattr(
+        container_entrypoint.os,
+        "setgroups",
+        lambda groups: calls.setdefault("groups", list(groups)),
+    )
+    monkeypatch.setattr(
+        container_entrypoint.os,
+        "setgid",
+        lambda gid: calls.setdefault("gid", gid),
+    )
+    monkeypatch.setattr(
+        container_entrypoint.os,
+        "setuid",
+        lambda uid: calls.setdefault("uid", uid),
+    )
+
+    container_entrypoint._drop_privileges(
+        user_name="appuser",
+        group_name="appgroup",
+    )
+
+    assert calls["groups"] == [456, 1000]
+    assert calls["gid"] == 456
+    assert calls["uid"] == 123
