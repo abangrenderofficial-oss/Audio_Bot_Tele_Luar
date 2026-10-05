@@ -194,3 +194,14 @@ def test_build_ytdlp_youtube_options_skips_missing_default_cookies_file(monkeypa
     options = build_ytdlp_youtube_options(skip_download=True)
 
     assert "cookiefile" not in options
+
+
+def test_build_ytdlp_youtube_options_forces_pot_for_web_creator(monkeypatch):
+    monkeypatch.setenv("YTDLP_YOUTUBE_PLAYER_CLIENT", "web_creator")
+
+    options = build_ytdlp_youtube_options(skip_download=True)
+
+    youtube_args = options["extractor_args"]["youtube"]
+    assert youtube_args["player_client"] == ["web_creator"]
+    assert youtube_args["fetch_pot"] == ["always"]
+    assert youtube_args["pot_trace"] == ["true"]
