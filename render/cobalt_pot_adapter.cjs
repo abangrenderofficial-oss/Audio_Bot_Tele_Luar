@@ -1365,25 +1365,36 @@ const server = http.createServer(async (request, response) => {
 
       console.log("[YOUTUBE-WORKER] direct Telegram audio start");
       let sent = null;
-      try {
-        const audioUrl = await enqueueYoutubeWorker(() =>
-          resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText)
-        );
-        sent = await sendWorkerAudioUrlToTelegram({
-          botToken,
-          chatId,
-          audioUrl,
-          title: body?.title,
-          performer: body?.performer,
-          duration: body?.duration,
-          businessConnectionId: body?.business_connection_id,
-        });
-        console.log("[YOUTUBE-WORKER] direct URL Telegram path succeeded");
-      } catch (urlError) {
-        console.warn(
-          "[YOUTUBE-WORKER] direct URL Telegram path failed; using file fallback:",
-          String(urlError?.message || urlError).slice(0, 1200)
-        );
+      const urlFastPathEnabled = ["1", "true", "yes", "on"].includes(
+        String(process.env.YOUTUBE_TELEGRAM_URL_FAST_PATH || "")
+          .trim()
+          .toLowerCase()
+      );
+
+      if (urlFastPathEnabled) {
+        try {
+          const audioUrl = await enqueueYoutubeWorker(() =>
+            resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText)
+          );
+          sent = await sendWorkerAudioUrlToTelegram({
+            botToken,
+            chatId,
+            audioUrl,
+            title: body?.title,
+            performer: body?.performer,
+            duration: body?.duration,
+            businessConnectionId: body?.business_connection_id,
+          });
+          console.log("[YOUTUBE-WORKER] direct URL Telegram path succeeded");
+        } catch (urlError) {
+          console.warn(
+            "[YOUTUBE-WORKER] direct URL Telegram path failed; using file fallback:",
+            String(urlError?.message || urlError).slice(0, 1200)
+          );
+        }
+      }
+
+      if (!sent) {
         filePath = await enqueueYoutubeWorker(() =>
           runYoutubeWorkerAudio(videoUrl, cookiesText)
         );
