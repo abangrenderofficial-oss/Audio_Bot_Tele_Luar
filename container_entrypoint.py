@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 import shutil
 import sys
@@ -9,6 +11,7 @@ DEFAULT_COMMAND = ["python", "main.py"]
 MANAGED_PATHS = ("/app/downloads", "/app/logs", "/app/cookies")
 DEFAULT_YOUTUBE_COOKIES_FILE = Path("/app/cookies/youtube.txt")
 RUNTIME_YOUTUBE_COOKIES_FILE = Path("/app/.runtime/cookies/youtube.txt")
+YOUTUBE_COOKIES_B64_ENV = "YTDLP_YOUTUBE_COOKIES_B64"
 
 
 def _resolve_command(argv: list[str]) -> list[str]:
@@ -73,7 +76,47 @@ def _resolve_youtube_cookie_source() -> Path:
     return DEFAULT_YOUTUBE_COOKIES_FILE
 
 
+
+def _prepare_youtube_cookie_env(*, uid: int, gid: int) -> bool:
+    encoded = os.getenv(YOUTUBE_COOKIES_B64_ENV)
+    if not encoded or not encoded.strip():
+        return False
+
+    try:
+        payload = base64.b64decode(encoded.strip(), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(
+            f"{YOUTUBE_COOKIES_B64_ENV} is not valid base64."
+        ) from exc
+
+    if not payload.strip():
+        raise RuntimeError(f"{YOUTUBE_COOKIES_B64_ENV} decoded to an empty file.")
+
+    first_line = payload.splitlines()[0] if payload.splitlines() else b""
+    if b"Netscape HTTP Cookie File" not in first_line:
+        raise RuntimeError(
+            f"{YOUTUBE_COOKIES_B64_ENV} must contain a Netscape cookies.txt export."
+        )
+
+    RUNTIME_YOUTUBE_COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RUNTIME_YOUTUBE_COOKIES_FILE.write_bytes(payload)
+    _chown_path(RUNTIME_YOUTUBE_COOKIES_FILE.parent, uid=uid, gid=gid)
+    _chown_path(RUNTIME_YOUTUBE_COOKIES_FILE, uid=uid, gid=gid)
+    try:
+        os.chmod(RUNTIME_YOUTUBE_COOKIES_FILE.parent, 0o700)
+        os.chmod(RUNTIME_YOUTUBE_COOKIES_FILE, 0o600)
+    except PermissionError:
+        pass
+
+    os.environ["YTDLP_YOUTUBE_COOKIES_FILE"] = str(RUNTIME_YOUTUBE_COOKIES_FILE)
+    os.environ.pop(YOUTUBE_COOKIES_B64_ENV, None)
+    return True
+
+
 def _prepare_youtube_cookie_file(*, uid: int, gid: int) -> None:
+    if _prepare_youtube_cookie_env(uid=uid, gid=gid):
+        return
+
     source = _resolve_youtube_cookie_source()
     if not source.is_file() or _path_allows_user_read_write(source, uid=uid, gid=gid):
         return
