@@ -11,7 +11,7 @@ def start_keyboard(
     username = bot_username or "MaxLoadBot"
     base_link = f"https://t.me/{username}"
 
-    share_text = "Fast downloader bot for Instagram, TikTok, YouTube & more!"
+    share_text = "Convert public YouTube, TikTok, Reels, Threads, X, SoundCloud & Spotify links to MP3."
     share_url = (
         f"https://t.me/share/url?url={quote(base_link)}&text={quote(share_text)}"
     )
