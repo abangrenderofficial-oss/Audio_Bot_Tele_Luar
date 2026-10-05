@@ -818,6 +818,168 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
   }
 }
 
+async function streamYoutubeWorkerAudio(videoUrl, cookiesText, response) {
+  if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
+    throw new Error("yt-dlp worker binary is missing");
+  }
+  if (!fs.existsSync(YOUTUBE_WORKER_PLUGIN_DIR)) {
+    throw new Error("bgutil yt-dlp plugin directory is missing");
+  }
+
+  const id = crypto.randomUUID();
+  const cookiePath = path.join(os.tmpdir(), `youtube-stream-${id}.cookies.txt`);
+  if (String(cookiesText || "").trim()) {
+    fs.writeFileSync(cookiePath, cookiesText, { mode: 0o600 });
+  }
+
+  const baseArgs = [
+    "--no-playlist",
+    "--no-warnings",
+    "--quiet",
+    "--socket-timeout", "15",
+    "--retries", "1",
+    "--fragment-retries", "1",
+    "--max-filesize", "150M",
+    "--proxy", YOUTUBE_WORKER_PROXY,
+    "--plugin-dirs", YOUTUBE_WORKER_PLUGIN_DIR,
+    "--js-runtimes", "node",
+    "--extractor-args",
+    "youtube:player_client=mweb;fetch_pot=always",
+    "--extractor-args",
+    "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+    "--format",
+    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+    "--output", "-",
+  ];
+
+  const runAttempt = (extraArgs = []) => new Promise((resolve, reject) => {
+    const child = spawn(
+      YOUTUBE_WORKER_YTDLP_BIN,
+      [...baseArgs, ...extraArgs, videoUrl],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          NO_PROXY: "127.0.0.1,localhost",
+          no_proxy: "127.0.0.1,localhost",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let stderr = "";
+    let total = 0;
+    let started = false;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (!started && !settled) {
+        settled = true;
+        reject(new Error("YouTube stream worker timed out"));
+      } else if (started) {
+        response.destroy(new Error("YouTube stream worker timed out"));
+      }
+    }, 120000);
+    timer.unref?.();
+
+    const failBeforeStart = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-12000);
+    });
+
+    child.stdout.on("data", (chunk) => {
+      if (!chunk?.length) return;
+      if (!started) {
+        started = true;
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "cache-control": "no-store",
+          "transfer-encoding": "chunked",
+        });
+      }
+
+      total += chunk.length;
+      if (total > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+        child.kill("SIGKILL");
+        response.destroy(new Error("YouTube worker audio exceeded safety limit"));
+        return;
+      }
+
+      if (!response.write(chunk)) {
+        child.stdout.pause();
+        response.once("drain", () => child.stdout.resume());
+      }
+    });
+
+    child.once("error", (error) => {
+      if (!started) {
+        failBeforeStart(error);
+      } else {
+        response.destroy(error);
+      }
+    });
+
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      const detail = stderr.trim().slice(-1200);
+      if (!started) {
+        failBeforeStart(
+          new Error(
+            `yt-dlp stream failed code=${code} signal=${signal || ""}` +
+              (detail ? `: ${detail}` : "")
+          )
+        );
+        return;
+      }
+
+      if (code !== 0) {
+        response.destroy(
+          new Error(
+            `yt-dlp stream failed after start code=${code} signal=${signal || ""}`
+          )
+        );
+      } else {
+        response.end();
+      }
+      if (!settled) {
+        settled = true;
+        console.log(`[YOUTUBE-WORKER] stream complete bytes=${total}`);
+        resolve();
+      }
+    });
+
+    response.once("close", () => {
+      if (!child.killed && child.exitCode == null) {
+        try { child.kill("SIGTERM"); } catch {}
+      }
+    });
+  });
+
+  try {
+    console.log("[YOUTUBE-WORKER] guest stream start");
+    try {
+      await runAttempt();
+    } catch (guestError) {
+      if (!fs.existsSync(cookiePath) || response.headersSent) throw guestError;
+      console.warn(
+        "[YOUTUBE-WORKER] guest stream failed before media:",
+        String(guestError?.message || guestError).slice(0, 1200)
+      );
+      console.log("[YOUTUBE-WORKER] cookie stream fallback start");
+      await runAttempt(["--cookies", cookiePath]);
+    }
+  } finally {
+    try { fs.rmSync(cookiePath, { force: true }); } catch {}
+  }
+}
+
 function enqueueYoutubeWorker(task) {
   const run = youtubeWorkerTail.then(task, task);
   youtubeWorkerTail = run.catch(() => {});
@@ -869,6 +1031,42 @@ const server = http.createServer(async (request, response) => {
       "content-length": Buffer.byteLength(payload),
     });
     response.end(payload);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/audio-stream") {
+    if (!(await workerAuthorized(request))) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(request);
+      const videoUrl = String(body?.url || "").trim();
+      const cookiesText = String(body?.cookies || "");
+      if (!isAllowedYoutubeUrl(videoUrl)) {
+        throw new Error("invalid YouTube URL");
+      }
+      await enqueueYoutubeWorker(() =>
+        streamYoutubeWorkerAudio(videoUrl, cookiesText, response)
+      );
+    } catch (error) {
+      console.error(
+        "[YOUTUBE-WORKER] stream request failed:",
+        String(error?.message || error).slice(0, 1500)
+      );
+      if (!response.headersSent) {
+        const payload = JSON.stringify({
+          error: error?.message || "YouTube stream worker unavailable",
+        });
+        response.writeHead(502, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        });
+        response.end(payload);
+      }
+    }
     return;
   }
 
