@@ -23,12 +23,11 @@ BITRATE_CHOICES_KBPS = (320, 256, 224, 192, 160, 128)
 MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
-YOUTUBE_PUBLIC_FALLBACK_CLIENTS = (
-    "mweb",
-    "android_vr",
-    "tv_simply",
-    "web_embedded",
-    "web_safari",
+YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
+    ("android_vr", "18/bestaudio/best"),
+    ("web_embedded", "bestaudio/best"),
+    ("tv", "bestaudio/best"),
+    ("web_safari", "bestaudio/best"),
 )
 
 _SOURCE_LABELS = {
@@ -186,14 +185,17 @@ def make_music_plan(duration_seconds: float | int | None) -> MusicPlan:
     return MusicPlan(mode="single", bitrate_kbps=bitrate)
 
 
+def _youtube_extractor_args(client: str) -> dict[str, dict[str, list[str]]]:
+    args: dict[str, list[str]] = {"player_client": [client]}
+    if client in {"android_vr", "web_embedded", "tv"}:
+        args["player_skip"] = ["webpage", "configs"]
+    return {"youtube": args}
+
+
 def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if youtube_client:
-        overrides["extractor_args"] = {
-            "youtube": {
-                "player_client": [youtube_client],
-            },
-        }
+        overrides["extractor_args"] = _youtube_extractor_args(youtube_client)
     options = build_ytdlp_youtube_options(
         skip_download=True,
         ignore_no_formats_error=True,
@@ -222,7 +224,7 @@ def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
         )
         errors = [f"primary: {first_error}"]
         last_error: Exception = first_error
-        for client in YOUTUBE_PUBLIC_FALLBACK_CLIENTS:
+        for client, _format_spec in YOUTUBE_PUBLIC_FALLBACK_PROFILES:
             try:
                 logging.info("Trying YouTube metadata client: %s", client)
                 return _extract_info_once(url, youtube_client=client)
@@ -269,16 +271,13 @@ def _run_ytdlp_mp3_once(
     bitrate_kbps: int,
     *,
     youtube_client: str | None = None,
+    format_spec: str = "bestaudio/best",
 ) -> str:
     overrides: dict[str, Any] = {}
     if youtube_client:
-        overrides["extractor_args"] = {
-            "youtube": {
-                "player_client": [youtube_client],
-            },
-        }
+        overrides["extractor_args"] = _youtube_extractor_args(youtube_client)
     options = build_ytdlp_youtube_options(
-        format="bestaudio/best",
+        format=format_spec,
         outtmpl=out_template,
         postprocessors=mp3_extract_postprocessors(str(int(bitrate_kbps))),
         merge_output_format="mp3",
@@ -317,15 +316,20 @@ def _run_ytdlp_mp3_sync(
         )
         errors = [f"primary: {first_error}"]
         last_error: Exception = first_error
-        for client in YOUTUBE_PUBLIC_FALLBACK_CLIENTS:
+        for client, format_spec in YOUTUBE_PUBLIC_FALLBACK_PROFILES:
             _clear_ytdlp_outputs(out_template)
             try:
-                logging.info("Trying YouTube audio client: %s", client)
+                logging.info(
+                    "Trying YouTube audio client: client=%s format=%s",
+                    client,
+                    format_spec,
+                )
                 return _run_ytdlp_mp3_once(
                     url,
                     out_template,
                     bitrate_kbps,
                     youtube_client=client,
+                    format_spec=format_spec,
                 )
             except MusicDownloadError:
                 raise
