@@ -146,6 +146,12 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
                 pot_base_url
             ]
 
+        youtube_args = extractor_args.setdefault("youtube", {})
+        selected_clients = youtube_args.get("player_client", [])
+        if "mweb" in selected_clients:
+            youtube_args["fetch_pot"] = ["always"]
+            youtube_args["pot_trace"] = ["true"]
+
     override_extractor_args = overrides.pop("extractor_args", None)
     if isinstance(override_extractor_args, dict):
         for extractor_name, extractor_values in override_extractor_args.items():
