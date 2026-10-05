@@ -45,6 +45,30 @@ const CHECKSUMS = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function patchCobaltSessionReloadInterval() {
+  const target = path.join(process.cwd(), ".cobalt/api/src/core/env.js");
+  try {
+    if (!fs.existsSync(target)) return;
+    const original = fs.readFileSync(target, "utf8");
+    const patched = original.replace(
+      /ytSessionReloadInterval:\s*300\s*,/,
+      "ytSessionReloadInterval: 60,"
+    );
+    if (patched !== original) {
+      fs.writeFileSync(target, patched, "utf8");
+      console.log("[POT-ADAPTER] patched Cobalt session reload interval to 60s");
+    } else if (/ytSessionReloadInterval:\s*60\s*,/.test(original)) {
+      console.log("[POT-ADAPTER] Cobalt session reload interval already 60s");
+    } else {
+      console.warn("[POT-ADAPTER] could not locate Cobalt session reload interval");
+    }
+  } catch (error) {
+    console.error("[POT-ADAPTER] failed to patch Cobalt session reload interval:", error?.message || error);
+  }
+}
+
+patchCobaltSessionReloadInterval();
+
 function writeRuntimeProxyEnv(enabled) {
   try {
     const proxyUrl = `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}`;
