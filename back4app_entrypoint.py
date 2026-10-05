@@ -13,6 +13,10 @@ POT_HOST = "127.0.0.1"
 POT_PORT = 4416
 
 
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -25,6 +29,10 @@ def _wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
 
 
 def _start_pot_provider() -> subprocess.Popen | None:
+    if _env_truthy("YOUTUBE_LOW_MEMORY_MODE"):
+        print("[POT] skipped because YOUTUBE_LOW_MEMORY_MODE is enabled", flush=True)
+        return None
+
     node_modules = POT_HOME / "node_modules"
     entrypoint = POT_HOME / "src" / "main.ts"
     if not node_modules.is_dir() or not entrypoint.is_file():
