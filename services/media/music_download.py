@@ -33,12 +33,8 @@ PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 INVIDIOUS_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 COBALT_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
-    ("web_creator", "bestaudio/best"),
     ("mweb", "bestaudio/best"),
-    ("android_vr", "18/bestaudio/best"),
-    ("web_embedded", "bestaudio/best"),
-    ("tv", "bestaudio/best"),
-    ("web_safari", "bestaudio/best"),
+    ("web_creator", "bestaudio/best"),
 )
 
 _SOURCE_LABELS = {
@@ -341,6 +337,9 @@ def _run_ytdlp_mp3_once(
         outtmpl=out_template,
         postprocessors=mp3_extract_postprocessors(str(int(bitrate_kbps))),
         merge_output_format="mp3",
+        socket_timeout=10,
+        retries=1,
+        fragment_retries=1,
         **overrides,
     )
     with YoutubeDL(options) as ydl:
