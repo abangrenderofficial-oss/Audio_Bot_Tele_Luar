@@ -595,11 +595,15 @@ def _download_invidious_source(
         "180",
         "--max-filesize",
         str(INVIDIOUS_MAX_SOURCE_BYTES),
+        "--range",
+        "0-",
         "--user-agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
         "--referer",
         "https://www.youtube.com/",
+        "--write-out",
+        "\\n__AR_META__%{http_code}\\t%{content_type}\\t%{size_download}\\t%{url_effective}",
     ]
     proxy = _curl_proxy_url() if use_youtube_proxy else None
     if proxy:
@@ -613,11 +617,57 @@ def _download_invidious_source(
         timeout=210,
         check=False,
     )
+
+    meta_text = ""
+    stdout_text = process.stdout or ""
+    if "__AR_META__" in stdout_text:
+        meta_text = stdout_text.rsplit("__AR_META__", 1)[-1].strip()
+
+    status_code = ""
+    content_type = ""
+    reported_size = ""
+    effective_url = ""
+    if meta_text:
+        parts = meta_text.split("\t", 3)
+        if len(parts) == 4:
+            status_code, content_type, reported_size, effective_url = parts
+
+    effective = urlparse(effective_url or media_url)
+    final_host = (effective.hostname or "").lower()
+    final_path = effective.path or "/"
+    logging.info(
+        "Invidious media HTTP result: status=%s content_type=%s size=%s final_host=%s final_path=%s via_proxy=%s",
+        status_code or "unknown",
+        content_type or "unknown",
+        reported_size or "unknown",
+        final_host or "unknown",
+        final_path,
+        bool(proxy),
+    )
+
     if process.returncode != 0:
         error_text = (process.stderr or "").strip()
         raise MusicDownloadError(
             "Invidious media download failed"
             + (f": {error_text[-300:]}" if error_text else "")
+        )
+
+    normalized_type = content_type.lower().split(";", 1)[0].strip()
+    if (
+        normalized_type.startswith("text/")
+        or normalized_type in {
+            "application/json",
+            "application/problem+json",
+            "application/xml",
+            "application/xhtml+xml",
+        }
+    ):
+        raise MusicDownloadError(
+            "Invidious media endpoint returned non-media response: "
+            f"status={status_code or 'unknown'} "
+            f"content_type={content_type or 'unknown'} "
+            f"final_host={final_host or 'unknown'} "
+            f"final_path={final_path}"
         )
 
     try:
