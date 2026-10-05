@@ -1609,26 +1609,9 @@ async def _download_mp3(
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
     if source == "youtube":
-        # Render/WARP/cookies/PO-token has been proven to hit youtube.login on
-        # the real Sesi Potret self-test. In low-memory mode use an external
-        # media relay only; do not silently fall back to the blocked Render IP.
-        if _youtube_low_memory_mode():
-            logging.info(
-                "YouTube relay-only mode: bypassing worker/Invidious/direct yt-dlp"
-            )
-            try:
-                return await asyncio.to_thread(
-                    _run_piped_mp3_sync,
-                    url,
-                    out_template,
-                    bitrate_kbps,
-                )
-            except Exception as relay_error:
-                _clear_ytdlp_outputs(out_template)
-                raise MusicDownloadError(
-                    f"YouTube Piped relay path exhausted: {relay_error}"
-                ) from relay_error
-
+        # YouTube extraction must happen outside Render egress. The external
+        # worker is primary even in low-memory mode. If it fails, only public
+        # relay paths may run on Render; never fall through to direct yt-dlp.
         worker_error: Exception | None = None
 
         if _youtube_worker_configured():
@@ -1642,28 +1625,29 @@ async def _download_mp3(
             except Exception as exc:
                 worker_error = exc
                 logging.warning(
-                    "Isolated WARP YouTube worker failed; using bounded direct fallback: error=%s",
+                    "External YouTube audio worker failed; trying relay fallback: error=%s",
                     exc,
                 )
                 _clear_ytdlp_outputs(out_template)
         else:
             logging.warning(
-                "Isolated YouTube worker is not configured; using bounded direct fallback"
+                "External YouTube worker is not configured; trying relay fallback"
             )
 
         try:
+            logging.info("Trying Piped relay after external YouTube worker")
             return await asyncio.to_thread(
-                _run_ytdlp_mp3_sync,
+                _run_piped_mp3_sync,
                 url,
                 out_template,
                 bitrate_kbps,
-                source,
             )
-        except MusicDownloadError as direct_error:
+        except Exception as relay_error:
+            _clear_ytdlp_outputs(out_template)
             raise MusicDownloadError(
-                f"Isolated worker: {worker_error}\n"
-                f"--- Direct fallback ---\n{direct_error}"
-            ) from direct_error
+                f"External worker: {worker_error}\n"
+                f"--- Piped relay fallback ---\n{relay_error}"
+            ) from relay_error
 
     return await asyncio.to_thread(
         _run_ytdlp_mp3_sync,
