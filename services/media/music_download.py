@@ -26,7 +26,7 @@ SEGMENT_SECONDS = 2400
 YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS = {
     "youtube": {
         "player_client": ["web_safari", "web_embedded", "tv"],
-    }
+    },
 }
 
 _SOURCE_LABELS = {
@@ -36,6 +36,7 @@ _SOURCE_LABELS = {
     "threads": "Threads",
     "twitter": "X / Twitter",
 }
+
 
 @dataclass(frozen=True, slots=True)
 class MusicMetadata:
