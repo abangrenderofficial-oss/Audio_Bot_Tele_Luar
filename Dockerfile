@@ -1,12 +1,33 @@
-FROM ghcr.io/imputnet/yt-session-generator:webserver
+FROM ghcr.io/imputnet/yt-session-generator:webserver AS upstream
+
+FROM python:3.12-alpine3.24
 
 ARG TARGETARCH
 ARG WGCF_VERSION=2.3.0
 ARG WIREPROXY_VERSION=1.1.3
 
-USER root
+RUN apk add --no-cache \
+      xvfb \
+      nss \
+      freetype \
+      freetype-dev \
+      harfbuzz \
+      ca-certificates \
+      ttf-freefont \
+      chromium \
+      chromium-chromedriver \
+      curl \
+      tar \
+      gzip
 
-RUN apk add --no-cache curl tar gzip ca-certificates
+WORKDIR /app
+
+# Keep the official trusted-session generator source, but run it on a current
+# browser/runtime instead of the upstream image's 2024-era Chromium.
+COPY --from=upstream /app /app
+
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
+    pip install --no-cache-dir --upgrade nodriver==0.50.3
 
 RUN set -eux; \
     case "$TARGETARCH" in \
@@ -30,8 +51,8 @@ RUN set -eux; \
     install -m 0755 "$WIREPROXY_BIN" /usr/local/bin/wireproxy; \
     rm -rf /tmp/wgcf /tmp/wireproxy /tmp/wireproxy.tar.gz
 
-# Cobalt currently requests POST /get_pot while the official generator
-# exposes /token. Keep the official generator and add only a compatible alias.
+# Current Cobalt asks POST /get_pot. The official generator exposes /token;
+# add a compatibility alias while keeping the official response format.
 RUN python - <<'PY'
 from pathlib import Path
 p = Path('/app/potoken_generator/server.py')
@@ -43,28 +64,128 @@ if needle not in s:
 p.write_text(s.replace(needle, replacement, 1))
 PY
 
-# Run Chromium without its container sandbox and force all YouTube browser
-# traffic through the local WARP SOCKS5 endpoint.
+# Modernize the browser launch, route Chromium through WARP, add safe page
+# diagnostics, and detect BotGuard tokens by payload fields rather than one
+# hard-coded YouTube endpoint.
 RUN python - <<'PY'
 from pathlib import Path
 p = Path('/app/potoken_generator/extractor.py')
 s = p.read_text()
-old = """                browser = await nodriver.start(headless=False,
+
+old_start = """                browser = await nodriver.start(headless=False,
                                                browser_executable_path=self.browser_path,
                                                user_data_dir=self.profile_path)"""
-new = """                browser = await nodriver.start(headless=False,
+new_start = """                browser = await nodriver.start(headless=False,
                                                browser_executable_path=self.browser_path,
                                                user_data_dir=self.profile_path,
-                                               browser_args=[\"--proxy-server=socks5://127.0.0.1:1080\"],
+                                               browser_args=[
+                                                   "--proxy-server=socks5://127.0.0.1:1080",
+                                                   "--autoplay-policy=no-user-gesture-required",
+                                               ],
                                                sandbox=False)"""
-if old not in s:
+if old_start not in s:
     raise SystemExit('official extractor.py nodriver.start layout changed')
-p.write_text(s.replace(old, new, 1))
+s = s.replace(old_start, new_start, 1)
+
+nav = "            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw')\n"
+diag = """            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw?autoplay=1')
+            try:
+                import re
+                page_html = await tab.get_content()
+                page_lower = page_html.lower()
+                markers = [
+                    marker for marker in (
+                        'before you continue',
+                        'consent.youtube.com',
+                        'sign in to confirm',
+                        'not a bot',
+                        'video unavailable',
+                        'unusual traffic',
+                        'movie_player',
+                    )
+                    if marker in page_lower
+                ]
+                logger.warning(
+                    f'page diagnostics markers={markers} html_len={len(page_html)}'
+                )
+            except Exception as diagnostic_error:
+                logger.warning(f'page diagnostics failed: {diagnostic_error}')
+"""
+if nav not in s:
+    raise SystemExit('official extractor.py navigation layout changed')
+s = s.replace(nav, diag, 1)
+
+old_handler = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
+        if not event.request.method == 'POST':
+            return
+        if '/youtubei/v1/player' not in event.request.url:
+            return
+        token_info = self._extract_token(event.request)
+        if token_info is None:
+            return
+        logger.info(f'new token: {token_info.to_json()}')
+        self._token_info = token_info
+        self._extraction_done.set()
+"""
+new_handler = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
+        request = event.request
+        if request.method != 'POST':
+            return
+
+        post_data = request.post_data
+        if not post_data:
+            return
+
+        try:
+            post_data_json = json.loads(post_data)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        context = post_data_json.get('context') or {}
+        client = context.get('client') or {}
+        integrity = post_data_json.get('serviceIntegrityDimensions') or {}
+        visitor_data = client.get('visitorData')
+        potoken = integrity.get('poToken')
+
+        if 'youtubei' in request.url:
+            from urllib.parse import urlsplit
+            req_path = urlsplit(request.url).path
+            logger.info(
+                f'network diagnostics youtubei_path={req_path} '
+                f'has_visitor={bool(visitor_data)} has_potoken={bool(potoken)}'
+            )
+
+        if not visitor_data or not potoken:
+            return
+
+        token_info = TokenInfo(
+            updated=int(time.time()),
+            potoken=potoken,
+            visitor_data=visitor_data,
+        )
+        logger.info(
+            f'trusted session token captured '
+            f'potoken_len={len(potoken)} visitor_len={len(visitor_data)}'
+        )
+        self._token_info = token_info
+        self._extraction_done.set()
+"""
+if old_handler not in s:
+    raise SystemExit('official extractor.py send-handler layout changed')
+s = s.replace(old_handler, new_handler, 1)
+
+p.write_text(s)
 PY
 
 RUN cat > /app/start-render-session.sh <<'SH'
 #!/bin/sh
 set -eu
+
+echo "[BROWSER] $(chromium-browser --version 2>/dev/null || chromium --version 2>/dev/null || true)"
+python - <<'PY'
+import nodriver
+print("[NODRIVER]", getattr(nodriver, "__version__", "unknown"))
+PY
 
 WARP_HOME=/app/.runtime/warp
 mkdir -p "$WARP_HOME"
@@ -106,106 +227,6 @@ Xvfb :99 -ac -screen 0 "${XVFB_WHD:-1280x720x16}" -nolisten tcp >/dev/null 2>&1 
 sleep 2
 exec env DISPLAY=:99 python /app/potoken-generator.py --bind 0.0.0.0
 SH
-
-RUN python - <<'PY'
-from pathlib import Path
-p = Path('/app/potoken_generator/extractor.py')
-s = p.read_text()
-needle = "            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw')\n"
-replacement = """            await tab.get('https://www.youtube.com/embed/jNQXAC9IVRw')
-            try:
-                import re
-                page_html = await tab.get_content()
-                page_lower = page_html.lower()
-                markers = [
-                    marker for marker in (
-                        'before you continue',
-                        'consent.youtube.com',
-                        'sign in to confirm',
-                        'not a bot',
-                        'video unavailable',
-                        'unusual traffic',
-                        'movie_player',
-                    )
-                    if marker in page_lower
-                ]
-                text_preview = re.sub(r'<[^>]+>', ' ', page_html)
-                text_preview = re.sub(r'\\s+', ' ', text_preview).strip()[:600]
-                logger.warning(f'page diagnostics markers={markers} preview={text_preview}')
-            except Exception as diagnostic_error:
-                logger.warning(f'page diagnostics failed: {diagnostic_error}')
-"""
-if needle not in s:
-    raise SystemExit('official extractor.py page navigation layout changed')
-p.write_text(s.replace(needle, replacement, 1))
-PY
-
-RUN python - <<'PY'
-from pathlib import Path
-p = Path('/app/potoken_generator/extractor.py')
-s = p.read_text()
-old = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
-        if not event.request.method == 'POST':
-            return
-        if '/youtubei/v1/player' not in event.request.url:
-            return
-        token_info = self._extract_token(event.request)
-        if token_info is None:
-            return
-        logger.info(f'new token: {token_info.to_json()}')
-        self._token_info = token_info
-        self._extraction_done.set()
-"""
-new = """    async def _send_handler(self, event: nodriver.cdp.network.RequestWillBeSent) -> None:
-        request = event.request
-        if request.method != 'POST':
-            return
-
-        # YouTube has moved BotGuard-backed player requests between different
-        # youtubei endpoints over time. Detect the trusted-session payload by
-        # its actual fields instead of hard-coding /youtubei/v1/player.
-        post_data = request.post_data
-        if not post_data:
-            return
-
-        try:
-            post_data_json = json.loads(post_data)
-        except (json.JSONDecodeError, TypeError):
-            return
-
-        context = post_data_json.get('context') or {}
-        client = context.get('client') or {}
-        integrity = post_data_json.get('serviceIntegrityDimensions') or {}
-        visitor_data = client.get('visitorData')
-        potoken = integrity.get('poToken')
-
-        if 'youtubei' in request.url:
-            from urllib.parse import urlsplit
-            path = urlsplit(request.url).path
-            logger.info(
-                f'network diagnostics youtubei_path={path} '
-                f'has_visitor={bool(visitor_data)} has_potoken={bool(potoken)}'
-            )
-
-        if not visitor_data or not potoken:
-            return
-
-        token_info = TokenInfo(
-            updated=int(time.time()),
-            potoken=potoken,
-            visitor_data=visitor_data,
-        )
-        logger.info(
-            f'trusted session token captured '
-            f'potoken_len={len(potoken)} visitor_len={len(visitor_data)}'
-        )
-        self._token_info = token_info
-        self._extraction_done.set()
-"""
-if old not in s:
-    raise SystemExit('official extractor.py send-handler layout changed')
-p.write_text(s.replace(old, new, 1))
-PY
 
 RUN chmod +x /app/start-render-session.sh
 
