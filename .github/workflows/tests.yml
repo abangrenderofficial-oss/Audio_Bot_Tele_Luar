@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - "music-bot-v2-*"
 
 permissions:
   contents: read
