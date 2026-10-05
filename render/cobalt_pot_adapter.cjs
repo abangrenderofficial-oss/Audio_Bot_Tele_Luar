@@ -355,10 +355,14 @@ async function fetchSession() {
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
+      const providerBody = WARP_ENABLED
+        ? JSON.stringify({ proxy: `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}` })
+        : "{}";
+
       const response = await fetch(PROVIDER_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: providerBody,
       });
       const text = await response.text();
       let data;
