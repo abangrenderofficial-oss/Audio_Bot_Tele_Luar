@@ -398,7 +398,7 @@ async def _run_music_selftest_from_env() -> None:
             metadata.duration,
         )
 
-        if (os.getenv("MUSIC_FAST_SELFTEST_SEND", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("MUSIC_FAST_SELFTEST_SEND", "").strip().lower() in {"1", "true", "yes", "on"}:
             fast_started = asyncio.get_running_loop().time()
             fast_result = await send_youtube_fast_to_telegram(
                 url,
