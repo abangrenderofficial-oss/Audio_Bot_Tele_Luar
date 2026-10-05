@@ -23,6 +23,9 @@ const WARP_SOCKS_HOST = "127.0.0.1";
 const WARP_SOCKS_PORT = Number(process.env.COBALT_WARP_SOCKS_PORT || "1080");
 const WARP_HTTP_HOST = "127.0.0.1";
 const WARP_HTTP_PORT = Number(process.env.COBALT_WARP_HTTP_PORT || "3128");
+const RUNTIME_ENV_FILE =
+  process.env.COBALT_RUNTIME_ENV_FILE ||
+  "/opt/render/project/src/render/cobalt_runtime.env";
 const WGCF_VERSION = "2.3.0";
 const WIREPROXY_VERSION = "1.1.3";
 
@@ -41,6 +44,29 @@ const CHECKSUMS = {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function writeRuntimeProxyEnv(enabled) {
+  try {
+    const proxyUrl = `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}`;
+    const lines = ["NO_PROXY=127.0.0.1,localhost"];
+    if (enabled) {
+      lines.push(`HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`);
+    }
+
+    fs.mkdirSync(path.dirname(RUNTIME_ENV_FILE), { recursive: true });
+    const tempPath = `${RUNTIME_ENV_FILE}.tmp`;
+    fs.writeFileSync(tempPath, `${lines.join("\n")}\n`, "utf8");
+    fs.renameSync(tempPath, RUNTIME_ENV_FILE);
+    console.log(
+      `[WARP] Cobalt runtime proxy env ${enabled ? "enabled" : "cleared"}`
+    );
+  } catch (error) {
+    console.error(
+      "[WARP] failed to update Cobalt runtime env:",
+      error?.message || error
+    );
+  }
+}
 
 function sha256File(filePath) {
   const hash = crypto.createHash("sha256");
@@ -304,8 +330,21 @@ async function startWarp() {
     }
 
     const proxy = startLocalHttpProxy();
+    const httpReady = await waitForPort(
+      WARP_HTTP_HOST,
+      WARP_HTTP_PORT,
+      10000
+    );
+    if (!httpReady) {
+      proxy.close();
+      wire.kill("SIGTERM");
+      throw new Error("WARP HTTP proxy did not become ready");
+    }
+
+    writeRuntimeProxyEnv(true);
     return { wire, proxy };
   } catch (error) {
+    writeRuntimeProxyEnv(false);
     console.error("[WARP] startup failed:", error?.message || error);
     return null;
   }
@@ -386,6 +425,8 @@ const server = http.createServer(async (request, response) => {
     response.end(payload);
   }
 });
+
+writeRuntimeProxyEnv(false);
 
 server.listen(PORT, HOST, () => {
   console.log(`[POT-ADAPTER] ready at http://${HOST}:${PORT}`);
