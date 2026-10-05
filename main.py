@@ -17,6 +17,7 @@ from aiogram_dialog import setup_dialogs
 
 from app_context import set_app_context
 from config import (
+    ADMIN_ID,
     API_SECRET,
     BOT_COMMANDS,
     BOT_POLLING_TASKS_CONCURRENCY_LIMIT,
@@ -370,6 +371,7 @@ async def _run_music_selftest_from_env() -> None:
         cleanup_music_result,
         download_music_files,
         fetch_music_metadata,
+        send_youtube_fast_to_telegram,
     )
 
     result = None
@@ -395,6 +397,24 @@ async def _run_music_selftest_from_env() -> None:
             metadata.title,
             metadata.duration,
         )
+
+        if (os.getenv("MUSIC_FAST_SELFTEST_SEND", "").strip().lower() in {"1", "true", "yes", "on"}:
+            fast_started = asyncio.get_running_loop().time()
+            fast_result = await send_youtube_fast_to_telegram(
+                url,
+                chat_id=ADMIN_ID,
+                title=metadata.title,
+                performer=metadata.performer,
+                duration=metadata.duration,
+            )
+            logging.info(
+                "[SELFTEST] FAST PASS: seconds=%.2f file_size=%s file_id_present=%s",
+                asyncio.get_running_loop().time() - fast_started,
+                fast_result.get("file_size"),
+                bool(fast_result.get("file_id")),
+            )
+            return
+
         result = await download_music_files(
             url,
             metadata=metadata,
