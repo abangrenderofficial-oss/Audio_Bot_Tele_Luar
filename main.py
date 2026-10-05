@@ -49,6 +49,18 @@ async def _heartbeat_loop():
         await asyncio.sleep(15)
 
 
+async def _music_cache_keepalive_loop():
+    from services.storage.music_cache import warm_music_cache
+
+    while True:
+        await asyncio.sleep(180)
+        try:
+            ok = await warm_music_cache(timeout_seconds=6.0)
+            logging.debug("Music cache keepalive: ok=%s", ok)
+        except Exception as exc:
+            logging.debug("Music cache keepalive failed: %s", exc)
+
+
 @dataclass(slots=True)
 class _AnalyticsPayload:
     user_id: int
@@ -416,6 +428,21 @@ async def main():
                 "PostgreSQL" if DATABASE_URL else "memory (no external database)",
             )
 
+            try:
+                from services.storage.music_cache import warm_music_cache
+                cache_warm_started = asyncio.get_running_loop().time()
+                cache_warm_ok = await warm_music_cache(timeout_seconds=8.0)
+                logging.info(
+                    "[STARTUP] Persistent music cache warm: ok=%s seconds=%.2f",
+                    cache_warm_ok,
+                    asyncio.get_running_loop().time() - cache_warm_started,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "[STARTUP] Persistent music cache warm failed: %s",
+                    exc,
+                )
+
             if DATABASE_URL or (MEASUREMENT_ID and API_SECRET):
                 await start_analytics_workers()
                 analytics_started = True
@@ -444,6 +471,9 @@ async def main():
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
 
             heartbeat_task = asyncio.create_task(_heartbeat_loop())
+            music_cache_keepalive_task = asyncio.create_task(
+                _music_cache_keepalive_loop()
+            )
             selftest_task = asyncio.create_task(_run_music_selftest_from_env())
             logging.perf(
                 "bot_startup_duration",
@@ -465,6 +495,8 @@ async def main():
             logging.event("polling_stopping")
             if "heartbeat_task" in locals():
                 heartbeat_task.cancel()
+            if "music_cache_keepalive_task" in locals():
+                music_cache_keepalive_task.cancel()
             if "selftest_task" in locals():
                 selftest_task.cancel()
             if analytics_started:
