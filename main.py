@@ -344,6 +344,52 @@ async def send_analytics(user_id, chat_type, action_name):
         )
 
 
+async def _run_music_selftest_from_env() -> None:
+    url = (os.getenv("MUSIC_SELFTEST_URL") or "").strip()
+    if not url:
+        return
+
+    from services.media.music_download import (
+        cleanup_music_result,
+        download_music_files,
+        fetch_music_metadata,
+    )
+
+    result = None
+    try:
+        logging.info("[SELFTEST] Starting YouTube Music self-test: %s", url)
+        metadata = await fetch_music_metadata(
+            url,
+            source="youtube",
+            timeout_seconds=60.0,
+        )
+        logging.info(
+            "[SELFTEST] Metadata OK: title=%s duration=%s",
+            metadata.title,
+            metadata.duration,
+        )
+        result = await download_music_files(
+            url,
+            metadata=metadata,
+            output_dir=OUTPUT_DIR,
+            job_id="startup-youtube-selftest",
+        )
+        sizes = [os.path.getsize(path) for path in result.paths]
+        logging.info(
+            "[SELFTEST] PASS: mode=%s bitrate=%skbps files=%s sizes=%s",
+            result.mode,
+            result.bitrate_kbps,
+            len(result.paths),
+            sizes,
+        )
+    except Exception as error:
+        logging.exception("[SELFTEST] FAIL: %s", error)
+    finally:
+        if result is not None:
+            with suppress(Exception):
+                await cleanup_music_result(result)
+
+
 async def main():
     analytics_started = False
     with logging.context(flow="startup", request_id="bot-startup"):
@@ -388,6 +434,7 @@ async def main():
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
 
             heartbeat_task = asyncio.create_task(_heartbeat_loop())
+            selftest_task = asyncio.create_task(_run_music_selftest_from_env())
             logging.perf(
                 "bot_startup_duration",
                 duration_ms=(asyncio.get_running_loop().time() - startup_started_at)
@@ -408,6 +455,8 @@ async def main():
             logging.event("polling_stopping")
             if "heartbeat_task" in locals():
                 heartbeat_task.cancel()
+            if "selftest_task" in locals():
+                selftest_task.cancel()
             if analytics_started:
                 with suppress(Exception):
                     await stop_analytics_workers()
