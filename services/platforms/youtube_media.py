@@ -190,9 +190,9 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
         os.getenv("YTDLP_YOUTUBE_POT_SERVER_HOME") or "/opt/bgutil-pot"
     ).strip()
     if pot_server_home and os.path.isdir(pot_server_home):
-        extractor_args.setdefault("youtubepot-bgutilscript", {})["server_home"] = [
-            pot_server_home
-        ]
+        # Prefer the already-running HTTP provider. The script provider starts
+        # Deno for every probe and can stall long enough to make YouTube
+        # client fallbacks fail before a PO token is requested.
         pot_base_url = (
             os.getenv("YTDLP_YOUTUBE_POT_BASE_URL")
             or "http://127.0.0.1:4416"
