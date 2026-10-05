@@ -696,33 +696,66 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
   const outputTemplate = `${prefix}.%(ext)s`;
   let outputPath = null;
 
-  try {
-    fs.writeFileSync(cookiePath, cookiesText, { mode: 0o600 });
-    const args = [
-      "--no-playlist",
-      "--no-cache-dir",
-      "--no-warnings",
-      "--quiet",
-      "--socket-timeout", "15",
-      "--retries", "1",
-      "--fragment-retries", "1",
-      "--max-filesize", "150M",
-      "--proxy", YOUTUBE_WORKER_PROXY,
-      "--cookies", cookiePath,
-      "--plugin-dirs", YOUTUBE_WORKER_PLUGIN_DIR,
-      "--js-runtimes", "node",
-      "--extractor-args",
-      "youtube:player_client=mweb,tv,web_safari;fetch_pot=always",
-      "--extractor-args",
-      "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
-      "--format",
-      "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-      "--output", outputTemplate,
-      videoUrl,
-    ];
+  const baseArgs = [
+    "--no-playlist",
+    "--no-cache-dir",
+    "--no-warnings",
+    "--quiet",
+    "--socket-timeout", "15",
+    "--retries", "1",
+    "--fragment-retries", "1",
+    "--max-filesize", "150M",
+    "--proxy", YOUTUBE_WORKER_PROXY,
+    "--plugin-dirs", YOUTUBE_WORKER_PLUGIN_DIR,
+    "--js-runtimes", "node",
+    "--extractor-args",
+    "youtube:player_client=mweb;fetch_pot=always",
+    "--extractor-args",
+    "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+    "--format",
+    "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+    "--output", outputTemplate,
+  ];
 
-    console.log("[YOUTUBE-WORKER] download start");
-    await runYoutubeWorkerProcess(args);
+  const clearOutputs = () => {
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      if (name.startsWith(`youtube-worker-${id}.`) && name !== path.basename(cookiePath)) {
+        try { fs.rmSync(path.join(os.tmpdir(), name), { force: true }); } catch {}
+      }
+    }
+  };
+
+  try {
+    if (String(cookiesText || "").trim()) {
+      fs.writeFileSync(cookiePath, cookiesText, { mode: 0o600 });
+    }
+
+    // First try a clean guest session. Account-bound/stale cookies can make
+    // YouTube return LOGIN_REQUIRED before the PO token path is useful.
+    console.log("[YOUTUBE-WORKER] guest download start");
+    let guestError = null;
+    try {
+      await runYoutubeWorkerProcess([...baseArgs, videoUrl]);
+    } catch (error) {
+      guestError = error;
+      console.warn(
+        "[YOUTUBE-WORKER] guest download failed:",
+        String(error?.message || error).slice(0, 1200)
+      );
+      clearOutputs();
+    }
+
+    // Only fall back to the supplied cookie session when guest mode failed.
+    if (guestError) {
+      if (!fs.existsSync(cookiePath)) throw guestError;
+      console.log("[YOUTUBE-WORKER] cookie fallback start");
+      await runYoutubeWorkerProcess([
+        ...baseArgs,
+        "--cookies", cookiePath,
+        videoUrl,
+      ]);
+    }
+
     outputPath = findYoutubeWorkerOutput(prefix);
     const stat = fs.statSync(outputPath);
     if (stat.size <= 0) throw new Error("YouTube worker audio file is empty");
@@ -732,11 +765,7 @@ async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
     console.log(`[YOUTUBE-WORKER] download ready bytes=${stat.size}`);
     return outputPath;
   } catch (error) {
-    for (const name of fs.readdirSync(os.tmpdir())) {
-      if (name.startsWith(`youtube-worker-${id}.`)) {
-        try { fs.rmSync(path.join(os.tmpdir(), name), { force: true }); } catch {}
-      }
-    }
+    clearOutputs();
     throw error;
   } finally {
     try { fs.rmSync(cookiePath, { force: true }); } catch {}
@@ -811,10 +840,6 @@ const server = http.createServer(async (request, response) => {
       if (!isAllowedYoutubeUrl(videoUrl)) {
         throw new Error("invalid YouTube URL");
       }
-      if (!cookiesText.trim()) {
-        throw new Error("YouTube cookies are required");
-      }
-
       const filePath = await enqueueYoutubeWorker(() =>
         runYoutubeWorkerAudio(videoUrl, cookiesText)
       );
