@@ -22,6 +22,11 @@ _RETRYABLE_ERROR_CODES = {
     # still warming up after a deploy. Retrying avoids falling back to the
     # direct yt-dlp path before poToken/visitor_data are ready.
     "error.api.youtube.no_session_tokens",
+    # During a Render cold start Cobalt can accept requests before its
+    # YouTube session token has finished minting. Treat login as transient
+    # here so the caller can wait for the session instead of falling back
+    # to yt-dlp too early.
+    "error.api.youtube.login",
 }
 
 
