@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1416,6 +1417,7 @@ def _run_youtube_worker_mp3_sync(
 
     try:
         logging.info("Trying external YouTube audio worker")
+        transfer_started = time.perf_counter()
         with httpx.Client(
             timeout=httpx.Timeout(150.0, connect=20.0),
             follow_redirects=True,
@@ -1458,6 +1460,13 @@ def _run_youtube_worker_mp3_sync(
         if total <= 0:
             raise MusicDownloadError("YouTube worker returned empty audio")
 
+        logging.info(
+            "YouTube worker timing: stage=http_transfer seconds=%.2f bytes=%s",
+            time.perf_counter() - transfer_started,
+            total,
+        )
+
+        ffmpeg_started = time.perf_counter()
         process = subprocess.run(
             [
                 "ffmpeg",
@@ -1490,6 +1499,10 @@ def _run_youtube_worker_mp3_sync(
                 + (f": {error_text[-500:]}" if error_text else "")
             )
 
+        logging.info(
+            "YouTube worker timing: stage=ffmpeg_320 seconds=%.2f",
+            time.perf_counter() - ffmpeg_started,
+        )
         logging.info(
             "Isolated WARP YouTube audio worker succeeded: source_bytes=%s",
             total,
