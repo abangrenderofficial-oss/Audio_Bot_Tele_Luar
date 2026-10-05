@@ -429,7 +429,7 @@ async def main():
             setup_dialogs(dp)
 
             await bot.set_my_commands(commands=BOT_COMMANDS)
-            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.delete_webhook(drop_pending_updates=False)
 
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
 
