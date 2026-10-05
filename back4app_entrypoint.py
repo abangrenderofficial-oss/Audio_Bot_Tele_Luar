@@ -232,7 +232,9 @@ def _start_pot_provider() -> subprocess.Popen | None:
 
 def main() -> None:
     health = subprocess.Popen([sys.executable, "/app/health_server.py"])
-    xvfb = _start_xvfb()
+    xvfb = _start_xvfb() if _env_truthy("YOUTUBE_BROWSER_WPC_ENABLED") else None
+    if xvfb is None:
+        print("[WPC] browser provider disabled for low-memory runtime", flush=True)
     warp_proxy = _start_warp_proxy()
     pot_provider = _start_pot_provider()
     try:
