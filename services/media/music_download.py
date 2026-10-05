@@ -454,7 +454,7 @@ def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
                 logging.info("Trying Invidious YouTube API: instance=%s", api_url)
                 response = client.get(
                     f"{api_url}/api/v1/videos/{video_id}",
-                    params={"local": "true"},
+                    params={"local": "false"},
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -510,12 +510,12 @@ def _extract_invidious_info_sync(url: str) -> dict[str, Any]:
     }
 
 
-def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+def _invidious_audio_streams(data: dict[str, Any]) -> list[dict[str, Any]]:
     streams = data.get("adaptiveFormats")
     if not isinstance(streams, list):
-        return None
+        return []
 
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     for item in streams:
         if not isinstance(item, dict):
             continue
@@ -528,16 +528,18 @@ def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
             continue
         candidates.append(item)
 
-    if not candidates:
-        return None
-
     def _score(item: dict[str, Any]) -> int:
         try:
             return int(item.get("bitrate") or 0)
         except (TypeError, ValueError):
             return 0
 
-    return max(candidates, key=_score)
+    return sorted(candidates, key=_score, reverse=True)
+
+
+def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = _invidious_audio_streams(data)
+    return candidates[0] if candidates else None
 
 
 def _invidious_raw_extension(stream: dict[str, Any]) -> str:
@@ -554,93 +556,200 @@ def _invidious_raw_extension(stream: dict[str, Any]) -> str:
     return "audio"
 
 
+def _curl_proxy_url() -> str | None:
+    proxy = (os.getenv("YTDLP_YOUTUBE_PROXY") or "").strip()
+    if not proxy:
+        return None
+    if proxy.startswith("socks5://"):
+        return "socks5h://" + proxy[len("socks5://"):]
+    return proxy
+
+
+def _download_invidious_source(media_url: str, raw_path: str) -> int:
+    command = [
+        "curl",
+        "-fL",
+        "--silent",
+        "--show-error",
+        "--retry",
+        "2",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "180",
+        "--max-filesize",
+        str(INVIDIOUS_MAX_SOURCE_BYTES),
+        "--user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "--referer",
+        "https://www.youtube.com/",
+    ]
+    proxy = _curl_proxy_url()
+    if proxy:
+        command.extend(["--proxy", proxy])
+    command.extend(["--output", raw_path, media_url])
+
+    process = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=210,
+        check=False,
+    )
+    if process.returncode != 0:
+        error_text = (process.stderr or "").strip()
+        raise MusicDownloadError(
+            "Invidious media download failed"
+            + (f": {error_text[-300:]}" if error_text else "")
+        )
+
+    try:
+        total = os.path.getsize(raw_path)
+    except OSError as exc:
+        raise MusicDownloadError("Invidious media file was not created") from exc
+    if total <= 0:
+        raise MusicDownloadError("Invidious audio source was empty")
+    if total > INVIDIOUS_MAX_SOURCE_BYTES:
+        raise MusicDownloadError("Invidious audio source exceeded safety limit")
+    return total
+
+
+def _validate_audio_source(raw_path: str) -> None:
+    try:
+        with open(raw_path, "rb") as handle:
+            prefix = handle.read(32).lstrip()
+    except OSError as exc:
+        raise MusicDownloadError("Unable to inspect Invidious audio source") from exc
+
+    if prefix.startswith((b"<", b"{", b"[")):
+        raise MusicDownloadError("Invidious media endpoint returned non-media content")
+
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            raw_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if probe.returncode != 0 or "audio" not in (probe.stdout or "").lower():
+        error_text = (probe.stderr or "").strip()
+        raise MusicDownloadError(
+            "Invidious source validation failed"
+            + (f": {error_text[-300:]}" if error_text else "")
+        )
+
+
 def _run_invidious_mp3_sync(
     url: str,
     out_template: str,
     bitrate_kbps: int,
 ) -> str:
     data, api_url = _fetch_invidious_video_sync(url)
-    stream = _pick_invidious_audio_stream(data)
-    if stream is None:
+    streams = _invidious_audio_streams(data)
+    if not streams:
         raise MusicDownloadError("Invidious returned no usable audio stream")
-
-    media_url = urljoin(f"{api_url}/", str(stream["url"]))
-    media_host = (urlparse(media_url).hostname or "").lower()
-    if media_host in {"localhost", "127.0.0.1", "::1"}:
-        raise MusicDownloadError("Invidious returned unsafe local media URL")
 
     base_path = out_template.replace(".%(ext)s", "")
     expected = f"{base_path}.mp3"
-    raw_path = f"{base_path}.invidious.{_invidious_raw_extension(stream)}"
-    headers = {"User-Agent": "AbangRender-MusicBot/1.0"}
+    errors: list[str] = []
 
-    try:
-        total = 0
-        with httpx.Client(
-            timeout=httpx.Timeout(60.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            with client.stream("GET", media_url, headers=headers) as response:
-                response.raise_for_status()
-                with open(raw_path, "wb") as handle:
-                    for chunk in response.iter_bytes(1024 * 1024):
-                        if not chunk:
-                            continue
-                        total += len(chunk)
-                        if total > INVIDIOUS_MAX_SOURCE_BYTES:
-                            raise MusicDownloadError(
-                                "Invidious audio source exceeded safety limit"
-                            )
-                        handle.write(chunk)
-
-        if total <= 0:
-            raise MusicDownloadError("Invidious audio source was empty")
-
-        process = subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                raw_path,
-                "-map",
-                "0:a:0?",
-                "-vn",
-                "-ac",
-                "2",
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                f"{int(bitrate_kbps)}k",
-                expected,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=240,
-            check=False,
-        )
-        if process.returncode != 0 or not os.path.isfile(expected):
-            error_text = (process.stderr or "").strip()
-            raise MusicDownloadError(
-                "Invidious ffmpeg conversion failed"
-                + (f": {error_text[-500:]}" if error_text else "")
-            )
-
-        logging.info(
-            "Invidious YouTube fallback succeeded: instance=%s source_bytes=%s",
-            api_url,
-            total,
-        )
-        return expected
-    finally:
+    for index, stream in enumerate(streams, start=1):
+        raw_path = f"{base_path}.invidious-{index}.{_invidious_raw_extension(stream)}"
         try:
-            os.remove(raw_path)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+            media_url = urljoin(f"{api_url}/", str(stream["url"]))
+            parsed = urlparse(media_url)
+            media_host = (parsed.hostname or "").lower()
+            if parsed.scheme != "https" or not media_host:
+                raise MusicDownloadError("Invidious returned a non-HTTPS media URL")
+            if media_host in {"localhost", "127.0.0.1", "::1"}:
+                raise MusicDownloadError("Invidious returned unsafe local media URL")
+
+            logging.info(
+                "Trying Invidious signed audio stream: instance=%s stream=%s/%s",
+                api_url,
+                index,
+                len(streams),
+            )
+            total = _download_invidious_source(media_url, raw_path)
+            _validate_audio_source(raw_path)
+
+            process = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    raw_path,
+                    "-map",
+                    "0:a:0?",
+                    "-vn",
+                    "-ac",
+                    "2",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    f"{int(bitrate_kbps)}k",
+                    expected,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=240,
+                check=False,
+            )
+            if process.returncode != 0 or not os.path.isfile(expected):
+                error_text = (process.stderr or "").strip()
+                raise MusicDownloadError(
+                    "Invidious ffmpeg conversion failed"
+                    + (f": {error_text[-300:]}" if error_text else "")
+                )
+
+            logging.info(
+                "Invidious signed YouTube audio succeeded: instance=%s source_bytes=%s stream=%s/%s",
+                api_url,
+                total,
+                index,
+                len(streams),
+            )
+            return expected
+        except Exception as exc:
+            errors.append(f"stream {index}: {exc}")
+            logging.warning(
+                "Invidious signed audio stream failed: instance=%s stream=%s/%s error=%s",
+                api_url,
+                index,
+                len(streams),
+                exc,
+            )
+            try:
+                if os.path.isfile(expected):
+                    os.remove(expected)
+            except OSError:
+                pass
+        finally:
+            try:
+                os.remove(raw_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    raise MusicDownloadError(
+        "Invidious signed audio streams failed\n" + "\n".join(errors)
+    )
 
 
 def _youtube_video_id(url: str) -> str | None:
