@@ -454,22 +454,21 @@ def test_cobalt_music_configured_requires_url_and_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_youtube_download_uses_cobalt_after_direct_chain_fails(monkeypatch, tmp_path):
+async def test_youtube_download_prefers_cobalt_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
     monkeypatch.setenv("COBALT_API_KEY", "secret")
-
-    def fail_direct(*_args, **_kwargs):
-        raise music_download.MusicDownloadError("youtube bot check")
 
     calls = []
 
     async def cobalt(url, out_template, bitrate_kbps):
-        calls.append((url, out_template, bitrate_kbps))
+        calls.append(("cobalt", url, out_template, bitrate_kbps))
         return str(tmp_path / "source.mp3")
 
-    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", fail_direct)
+    def direct_should_not_run(*_args, **_kwargs):
+        raise AssertionError("direct YouTube chain must not run after successful Cobalt")
+
     monkeypatch.setattr(music_download, "_run_cobalt_mp3", cobalt)
-    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", direct_should_not_run)
 
     result = await music_download._download_mp3(
         "https://youtu.be/Ftffph3fVEs",
@@ -481,11 +480,42 @@ async def test_youtube_download_uses_cobalt_after_direct_chain_fails(monkeypatch
     assert result == str(tmp_path / "source.mp3")
     assert calls == [
         (
+            "cobalt",
             "https://youtu.be/Ftffph3fVEs",
             str(tmp_path / "source.%(ext)s"),
             192,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_youtube_download_falls_back_to_direct_chain_when_cobalt_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
+    monkeypatch.setenv("COBALT_API_KEY", "secret")
+
+    calls = []
+
+    async def fail_cobalt(*_args, **_kwargs):
+        calls.append("cobalt")
+        raise music_download.MusicDownloadError("cobalt unavailable")
+
+    def direct(*_args, **_kwargs):
+        calls.append("direct")
+        return str(tmp_path / "source.mp3")
+
+    monkeypatch.setattr(music_download, "_run_cobalt_mp3", fail_cobalt)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", direct)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
+
+    result = await music_download._download_mp3(
+        "https://youtu.be/Ftffph3fVEs",
+        work_dir=str(tmp_path),
+        bitrate_kbps=192,
+        source="youtube",
+    )
+
+    assert result == str(tmp_path / "source.mp3")
+    assert calls == ["cobalt", "direct"]
 
 
 @pytest.mark.asyncio
