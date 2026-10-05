@@ -13,7 +13,7 @@ POT_HOST = "127.0.0.1"
 POT_PORT = 4416
 
 
-def _wait_for_port(host: str, port: int, timeout: float = 12.0) -> bool:
+def _wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -49,9 +49,12 @@ def _start_pot_provider() -> subprocess.Popen | None:
         print(f"[POT] HTTP provider ready at http://{POT_HOST}:{POT_PORT}", flush=True)
         return process
 
-    print("[POT] HTTP provider did not become ready in time", flush=True)
-    if process.poll() is None:
+    return_code = process.poll()
+    if return_code is None:
+        print("[POT] HTTP provider did not become ready within 60s", flush=True)
         process.terminate()
+    else:
+        print(f"[POT] HTTP provider exited before ready: code={return_code}", flush=True)
     return None
 
 
