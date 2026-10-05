@@ -20,14 +20,6 @@ def start_keyboard(
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="⚡ Try inline", switch_inline_query_current_chat=""
-                ),
-                InlineKeyboardButton(
-                    text="⚙️ Settings", callback_data="back_to_settings"
-                ),
-            ],
-            [
                 InlineKeyboardButton(text="🚀 Share bot", url=share_url),
                 InlineKeyboardButton(text="➕ Add to group", url=add_to_group_url),
             ],
