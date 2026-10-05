@@ -309,11 +309,11 @@ def help_message(bot_username: str | None = None) -> str:
 
 
 def referral_message(bot_username: str, user_id: int, invited_count: int) -> str:
-    username = bot_username or "MaxLoadBot"
+    username = bot_username or "MusicBot"
     ref_link = f"https://t.me/{username}?start=ref_{user_id}"
     return (
-        "<b>👥 Your Referral Program</b>\n\n"
-        "Invite friends to use MaxLoad! Share your personal referral link:\n"
+        "<b>👥 Referral MP3 Music Bot</b>\n\n"
+        "Kongsi link peribadi ini untuk jemput kawan guna bot:\n"
         f"<code>{ref_link}</code>\n\n"
         f"Users invited: <b>{invited_count}</b>"
     )
@@ -358,21 +358,30 @@ def audio_too_large():
     return "The audio is too large for Telegram. Try a shorter track or another source link."
 
 
+def music_unsupported_link():
+    return (
+        "<b>🎵 MP3 Music Bot</b>\n\n"
+        "Link Pinterest belum disokong untuk conversion MP3.\n"
+        "Gunakan link public daripada YouTube, TikTok, Instagram Reels, Threads, X / Twitter, SoundCloud atau Spotify."
+    )
+
+
 def nothing_found():
     return "No media found. Check that the link is public, not expired, and points directly to a post or video."
 
 
 def guest_help_message(bot_username: str) -> str:
     return (
-        "👋 <b>MaxLoad — Guest Mode</b>\n\n"
-        "You summoned the bot in this chat! To download media, mention me with a link from any supported platform:\n\n"
-        "• <b>TikTok</b> (videos, photos)\n"
-        "• <b>Instagram & Threads</b> (reels, photos)\n"
-        "• <b>YouTube</b> (videos, music)\n"
-        "• <b>Twitter / X</b> (videos, gifs)\n"
-        "• <b>SoundCloud & Spotify</b> (music)\n"
-        "• <b>Pinterest</b> (pins, videos)\n\n"
-        "<i>💡 Tip: Add me to this group or open a direct chat with @{bot_username} for full features and settings!</i>"
+        "🎵 <b>MP3 Music Bot — Guest Mode</b>\n\n"
+        "Mention bot bersama satu link public untuk tukar audio kepada MP3:\n\n"
+        "• <b>YouTube / Shorts</b>\n"
+        "• <b>TikTok</b>\n"
+        "• <b>Instagram Reels</b>\n"
+        "• <b>Threads</b>\n"
+        "• <b>X / Twitter</b>\n"
+        "• <b>SoundCloud</b>\n"
+        "• <b>Spotify</b>\n\n"
+        "<i>Untuk conversion penuh, buka private chat dengan @{bot_username}.</i>"
     ).format(bot_username=bot_username)
 
 
@@ -385,6 +394,6 @@ def guest_downloading_status(service_name: str) -> str:
 
 def guest_unsupported_link() -> str:
     return (
-        "Sorry, no supported media link was found in your mention. "
-        "Please include a link from TikTok, Instagram, YouTube, X, SoundCloud, Spotify, or Pinterest."
+        "Tiada link music yang disokong dijumpai. "
+        "Gunakan YouTube, TikTok, Instagram Reels, Threads, X / Twitter, SoundCloud atau Spotify."
     )
