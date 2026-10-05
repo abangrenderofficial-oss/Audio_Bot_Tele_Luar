@@ -715,7 +715,32 @@ def _run_invidious_mp3_sync(
                         os.remove(raw_path)
                     except OSError:
                         pass
-                    raise
+
+                    media_url = urljoin(f"{api_url}/", str(stream["url"]))
+                    parsed = urlparse(media_url)
+                    media_host = (parsed.hostname or "").lower()
+                    if parsed.scheme != "https" or not media_host:
+                        raise MusicDownloadError(
+                            "Invidious returned a non-HTTPS signed media URL"
+                        ) from local_error
+                    if media_host in {"localhost", "127.0.0.1", "::1"}:
+                        raise MusicDownloadError(
+                            "Invidious returned unsafe local signed media URL"
+                        ) from local_error
+
+                    logging.info(
+                        "Retrying Invidious signed audio via YouTube proxy: instance=%s stream=%s/%s itag=%s",
+                        api_url,
+                        index,
+                        len(streams),
+                        itag,
+                    )
+                    total = _download_invidious_source(
+                        media_url,
+                        raw_path,
+                        use_youtube_proxy=True,
+                    )
+                    _validate_audio_source(raw_path)
             else:
                 media_url = urljoin(f"{api_url}/", str(stream["url"]))
                 parsed = urlparse(media_url)
