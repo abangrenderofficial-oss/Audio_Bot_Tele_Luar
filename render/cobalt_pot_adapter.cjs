@@ -36,6 +36,7 @@ const YOUTUBE_WORKER_MAX_SOURCE_BYTES =
   Number(process.env.YOUTUBE_WORKER_MAX_SOURCE_BYTES || "") ||
   150 * 1024 * 1024;
 let youtubeWorkerTail = Promise.resolve();
+let socialWorkerTail = Promise.resolve();
 
 const WARP_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.COBALT_WARP_ENABLED || "")
@@ -643,6 +644,29 @@ async function workerAuthorized(request) {
   return validateTelegramBotToken(token);
 }
 
+function isAllowedSocialUrl(source, value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (parsed.protocol !== "https:") return false;
+
+    const allowed = {
+      tiktok: host === "tiktok.com" || host.endsWith(".tiktok.com"),
+      instagram:
+        host === "instagram.com" || host.endsWith(".instagram.com"),
+      threads: host === "threads.net" || host.endsWith(".threads.net"),
+      twitter:
+        host === "x.com" ||
+        host.endsWith(".x.com") ||
+        host === "twitter.com" ||
+        host.endsWith(".twitter.com"),
+    };
+    return Boolean(allowed[String(source || "").toLowerCase()]);
+  } catch {
+    return false;
+  }
+}
+
 function isAllowedYoutubeUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -863,6 +887,253 @@ async function resolveYoutubeWorkerAudioUrl(videoUrl, cookiesText) {
     }
   } finally {
     try { fs.rmSync(cookiePath, { force: true }); } catch {}
+  }
+}
+
+function socialSourceLabel(source) {
+  return {
+    tiktok: "TikTok",
+    instagram: "Instagram",
+    threads: "Threads",
+    twitter: "X",
+  }[String(source || "").toLowerCase()] || "Social";
+}
+
+function socialReadMeta(filePath, fallback = "") {
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    if (!value || value === "NA" || value === "None") return fallback;
+    return value;
+  } catch {
+    return fallback;
+  }
+}
+
+function probeAudioCodec(filePath) {
+  const result = spawnSync(
+    "ffprobe",
+    [
+      "-v", "error",
+      "-select_streams", "a:0",
+      "-show_entries", "stream=codec_name",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 15000,
+      maxBuffer: 256 * 1024,
+    }
+  );
+  if (result.status !== 0) return "";
+  return String(result.stdout || "").trim().toLowerCase();
+}
+
+function prepareSocialAudioFile(sourcePath, prefix) {
+  const codec = probeAudioCodec(sourcePath);
+  let targetPath = "";
+  let args = [];
+  let transcoded = false;
+
+  if (codec === "aac") {
+    targetPath = `${prefix}.fast.m4a`;
+    args = [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", sourcePath,
+      "-map", "0:a:0?",
+      "-vn",
+      "-c:a", "copy",
+      "-movflags", "+faststart",
+      targetPath,
+    ];
+  } else if (codec === "mp3") {
+    targetPath = `${prefix}.fast.mp3`;
+    args = [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", sourcePath,
+      "-map", "0:a:0?",
+      "-vn",
+      "-c:a", "copy",
+      targetPath,
+    ];
+  } else {
+    targetPath = `${prefix}.fast.m4a`;
+    transcoded = true;
+    args = [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-i", sourcePath,
+      "-map", "0:a:0?",
+      "-vn",
+      "-ac", "2",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-movflags", "+faststart",
+      targetPath,
+    ];
+  }
+
+  const result = spawnSync("ffmpeg", args, {
+    encoding: "utf8",
+    timeout: 120000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (
+    result.status !== 0 ||
+    !fs.existsSync(targetPath) ||
+    fs.statSync(targetPath).size <= 0
+  ) {
+    throw new Error(
+      "social audio prepare failed" +
+        (result.stderr ? `: ${String(result.stderr).slice(-700)}` : "")
+    );
+  }
+  return { filePath: targetPath, codec, transcoded };
+}
+
+async function runSocialWorkerAudio(mediaUrl, source) {
+  if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
+    throw new Error("yt-dlp worker binary is missing");
+  }
+
+  source = String(source || "").trim().toLowerCase();
+  if (!isAllowedSocialUrl(source, mediaUrl)) {
+    throw new Error("invalid social media URL");
+  }
+
+  const id = crypto.randomUUID();
+  const prefix = path.join(os.tmpdir(), `social-worker-${source}-${id}`);
+  const outputTemplate = `${prefix}.%(ext)s`;
+  const titlePath = `${prefix}.title.txt`;
+  const trackPath = `${prefix}.track.txt`;
+  const uploaderPath = `${prefix}.uploader.txt`;
+  const uploaderIdPath = `${prefix}.uploader-id.txt`;
+  const durationPath = `${prefix}.duration.txt`;
+  let preparedPath = null;
+
+  const baseArgs = [
+    "--no-playlist",
+    "--no-warnings",
+    "--quiet",
+    "--socket-timeout", "15",
+    "--retries", "1",
+    "--fragment-retries", "1",
+    "--max-filesize", "150M",
+    "--js-runtimes", "node",
+    "--format", "bestaudio/best",
+    "--output", outputTemplate,
+    "--print-to-file", "after_move:%(title)s", titlePath,
+    "--print-to-file", "after_move:%(track)s", trackPath,
+    "--print-to-file", "after_move:%(uploader)s", uploaderPath,
+    "--print-to-file", "after_move:%(uploader_id)s", uploaderIdPath,
+    "--print-to-file", "after_move:%(duration)s", durationPath,
+  ];
+
+  const clearOutputs = (keep = null) => {
+    try {
+      for (const name of fs.readdirSync(os.tmpdir())) {
+        if (!name.startsWith(`social-worker-${source}-${id}.`)) continue;
+        const full = path.join(os.tmpdir(), name);
+        if (keep && full === keep) continue;
+        try { fs.rmSync(full, { force: true }); } catch {}
+      }
+    } catch {}
+  };
+
+  const findMediaOutput = () => {
+    const ignored = new Set([
+      titlePath, trackPath, uploaderPath, uploaderIdPath, durationPath,
+    ]);
+    const matches = fs
+      .readdirSync(os.tmpdir())
+      .filter((name) =>
+        name.startsWith(`social-worker-${source}-${id}.`)
+      )
+      .map((name) => path.join(os.tmpdir(), name))
+      .filter((full) => !ignored.has(full) && !full.endsWith(".part"))
+      .filter((full) => {
+        try { return fs.statSync(full).isFile(); } catch { return false; }
+      });
+    if (!matches.length) {
+      throw new Error("social worker produced no media file");
+    }
+    matches.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size);
+    return matches[0];
+  };
+
+  try {
+    console.log(`[SOCIAL-WORKER] ${source} direct download start`);
+    let directError = null;
+    try {
+      await runYoutubeWorkerProcess([...baseArgs, mediaUrl], 120000);
+    } catch (error) {
+      directError = error;
+      console.warn(
+        `[SOCIAL-WORKER] ${source} direct failed:`,
+        String(error?.message || error).slice(0, 1200)
+      );
+      clearOutputs();
+    }
+
+    if (directError) {
+      console.log(`[SOCIAL-WORKER] ${source} WARP fallback start`);
+      await runYoutubeWorkerProcess(
+        [...baseArgs, "--proxy", YOUTUBE_WORKER_PROXY, mediaUrl],
+        120000
+      );
+    }
+
+    const rawPath = findMediaOutput();
+    const rawStat = fs.statSync(rawPath);
+    if (rawStat.size <= 0) {
+      throw new Error("social worker media is empty");
+    }
+    if (rawStat.size > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+      throw new Error("social worker media exceeded safety limit");
+    }
+
+    const prepared = prepareSocialAudioFile(rawPath, prefix);
+    preparedPath = prepared.filePath;
+    const stat = fs.statSync(preparedPath);
+    if (stat.size > 49 * 1024 * 1024) {
+      throw new Error("social fast audio exceeds Telegram audio limit");
+    }
+
+    const track = socialReadMeta(trackPath, "");
+    const uploader = socialReadMeta(
+      uploaderPath,
+      socialSourceLabel(source)
+    );
+    const uploaderId = socialReadMeta(uploaderIdPath, "")
+      .replace(/^@+/, "");
+    const rawTitle = socialReadMeta(titlePath, "");
+    const title = track || (
+      uploaderId
+        ? `Original sound — @${uploaderId}`
+        : rawTitle || `Original sound — ${uploader}`
+    );
+    const rawDuration = socialReadMeta(durationPath, "");
+    const duration = Number(rawDuration);
+
+    console.log(
+      `[SOCIAL-WORKER] ${source} audio ready bytes=${stat.size} codec=${prepared.codec || "unknown"} transcoded=${prepared.transcoded}`
+    );
+
+    clearOutputs(preparedPath);
+    return {
+      filePath: preparedPath,
+      metadata: {
+        title,
+        performer: uploaderId ? `@${uploaderId}` : uploader,
+        duration:
+          Number.isFinite(duration) && duration > 0 ? duration : null,
+      },
+      qualityLabel: prepared.transcoded
+        ? "Fast Audio"
+        : "Original Quality",
+    };
+  } catch (error) {
+    clearOutputs();
+    throw error;
   }
 }
 
@@ -1218,7 +1489,7 @@ async function sendWorkerAudioUrlToTelegram({
   }
   form.append(
     "caption",
-    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\nOriginal Quality`
+    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\n${escapeHtml(qualityLabel)}`
   );
   form.append("parse_mode", "HTML");
   if (businessConnectionId) {
@@ -1266,14 +1537,17 @@ async function sendWorkerAudioToTelegram({
   performer,
   duration,
   businessConnectionId,
+  qualityLabel = "Original Quality",
 }) {
   if (!(await validateTelegramBotToken(botToken))) {
     throw new Error("invalid Telegram bot token");
   }
 
   const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
-  if (!["m4a", "mp4"].includes(ext)) {
-    throw new Error(`fast Telegram audio requires m4a/mp4 source, got ${ext || "unknown"}`);
+  if (!["m4a", "mp4", "mp3"].includes(ext)) {
+    throw new Error(
+      `fast Telegram audio requires m4a/mp4/mp3 source, got ${ext || "unknown"}`
+    );
   }
 
   const stat = fs.statSync(filePath);
@@ -1281,14 +1555,14 @@ async function sendWorkerAudioToTelegram({
     throw new Error("fast Telegram audio file is outside safe size");
   }
 
-  const mime = "audio/mp4";
+  const mime = ext === "mp3" ? "audio/mpeg" : "audio/mp4";
   const bytes = fs.readFileSync(filePath);
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append(
     "audio",
     new Blob([bytes], { type: mime }),
-    telegramFilename(title, "m4a")
+    telegramFilename(title, ext === "mp3" ? "mp3" : "m4a")
   );
   form.append("title", telegramText(title, "Audio", 64));
   form.append("performer", telegramText(performer, "YouTube", 64));
@@ -1344,6 +1618,12 @@ function enqueueYoutubeWorker(task) {
   return run;
 }
 
+function enqueueSocialWorker(task) {
+  const run = socialWorkerTail.then(task, task);
+  socialWorkerTail = run.catch(() => {});
+  return run;
+}
+
 function streamWorkerFile(response, filePath) {
   const stat = fs.statSync(filePath);
   const ext = path.extname(filePath).replace(/^\./, "") || "audio";
@@ -1389,6 +1669,101 @@ const server = http.createServer(async (request, response) => {
       "content-length": Buffer.byteLength(payload),
     });
     response.end(payload);
+    return;
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/social-telegram-audio"
+  ) {
+    if (!(await workerAuthorized(request))) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+
+    let preparedPath = null;
+    try {
+      const body = await readJsonBody(request);
+      const source = String(body?.source || "").trim().toLowerCase();
+      const mediaUrl = String(body?.url || "").trim();
+      const botToken = String(body?.telegram_bot_token || "").trim();
+      const chatId = String(body?.chat_id || "").trim();
+
+      if (!isAllowedSocialUrl(source, mediaUrl)) {
+        throw new Error("invalid social media URL");
+      }
+      if (!/^-?\d+$/.test(chatId)) {
+        throw new Error("invalid Telegram chat id");
+      }
+      if (!/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
+        throw new Error("invalid Telegram bot token format");
+      }
+
+      console.log(
+        `[SOCIAL-WORKER] ${source} direct Telegram audio start`
+      );
+
+      const downloaded = await enqueueSocialWorker(() =>
+        runSocialWorkerAudio(mediaUrl, source)
+      );
+      preparedPath = downloaded.filePath;
+      const metadata = downloaded.metadata || {};
+      const qualityLabel =
+        downloaded.qualityLabel || "Original Quality";
+
+      const sent = await sendWorkerAudioToTelegram({
+        botToken,
+        chatId,
+        filePath: preparedPath,
+        title: metadata.title || "Audio",
+        performer: metadata.performer || socialSourceLabel(source),
+        duration: metadata.duration,
+        businessConnectionId: body?.business_connection_id,
+        qualityLabel,
+      });
+
+      const payload = JSON.stringify({
+        ok: true,
+        ...sent,
+        title: telegramText(metadata.title, "Audio", 200),
+        performer: telegramText(
+          metadata.performer,
+          socialSourceLabel(source),
+          200
+        ),
+        duration:
+          Number(metadata.duration) > 0
+            ? Number(metadata.duration)
+            : sent?.duration || null,
+        quality_label: qualityLabel,
+      });
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+        "cache-control": "no-store",
+      });
+      response.end(payload);
+    } catch (error) {
+      console.error(
+        "[SOCIAL-WORKER] request failed:",
+        String(error?.message || error).slice(0, 1500)
+      );
+      if (!response.headersSent) {
+        const payload = JSON.stringify({
+          error: error?.message || "social audio worker unavailable",
+        });
+        response.writeHead(502, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        });
+        response.end(payload);
+      }
+    } finally {
+      if (preparedPath) {
+        try { fs.rmSync(preparedPath, { force: true }); } catch {}
+      }
+    }
     return;
   }
 
