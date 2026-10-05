@@ -17,6 +17,8 @@ WIREPROXY_BIN = Path("/usr/local/bin/wireproxy")
 WARP_HOST = "127.0.0.1"
 WARP_PORT = 1080
 WARP_PROXY_URL = f"socks5://{WARP_HOST}:{WARP_PORT}"
+XVFB_BIN = Path("/usr/bin/Xvfb")
+XVFB_DISPLAY = (os.getenv("YTDLP_XVFB_DISPLAY") or ":99").strip() or ":99"
 
 
 def _env_truthy(name: str) -> bool:
@@ -152,6 +154,45 @@ def _start_warp_proxy() -> subprocess.Popen | None:
     return process
 
 
+def _start_xvfb() -> subprocess.Popen | None:
+    if not XVFB_BIN.is_file():
+        print("[WPC] Xvfb is unavailable; browser PO provider may not start", flush=True)
+        return None
+
+    os.environ["DISPLAY"] = XVFB_DISPLAY
+    process = subprocess.Popen(
+        [
+            str(XVFB_BIN),
+            XVFB_DISPLAY,
+            "-ac",
+            "-screen",
+            "0",
+            "1280x720x24",
+            "-nolisten",
+            "tcp",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    display_number = XVFB_DISPLAY.lstrip(":").split(".", 1)[0]
+    socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            print("[WPC] Xvfb exited before becoming ready", flush=True)
+            return None
+        if socket_path.exists():
+            print(f"[WPC] virtual display ready at {XVFB_DISPLAY}", flush=True)
+            return process
+        time.sleep(0.2)
+
+    print("[WPC] Xvfb did not become ready; browser PO provider may fail", flush=True)
+    if process.poll() is None:
+        process.terminate()
+    return None
+
+
 def _start_pot_provider() -> subprocess.Popen | None:
     if _env_truthy("YOUTUBE_LOW_MEMORY_MODE"):
         print("[POT] skipped because YOUTUBE_LOW_MEMORY_MODE is enabled", flush=True)
@@ -191,6 +232,7 @@ def _start_pot_provider() -> subprocess.Popen | None:
 
 def main() -> None:
     health = subprocess.Popen([sys.executable, "/app/health_server.py"])
+    xvfb = _start_xvfb()
     warp_proxy = _start_warp_proxy()
     pot_provider = _start_pot_provider()
     try:
@@ -199,6 +241,8 @@ def main() -> None:
     finally:
         if pot_provider is not None and pot_provider.poll() is None:
             pot_provider.terminate()
+        if xvfb is not None and xvfb.poll() is None:
+            xvfb.terminate()
         if warp_proxy is not None and warp_proxy.poll() is None:
             warp_proxy.terminate()
         if health.poll() is None:

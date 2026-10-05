@@ -186,21 +186,16 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
     if po_token and po_token.strip():
         extractor_args.setdefault("youtube", {})["po_token"] = _split_env_list(po_token)
 
-    pot_server_home = (
-        os.getenv("YTDLP_YOUTUBE_POT_SERVER_HOME") or "/opt/bgutil-pot"
+    wpc_browser_path = (
+        os.getenv("YTDLP_YOUTUBE_WPC_BROWSER_PATH") or "/usr/bin/chromium"
     ).strip()
-    if pot_server_home and os.path.isdir(pot_server_home):
-        # Prefer the already-running HTTP provider. The script provider starts
-        # Deno for every probe and can stall long enough to make YouTube
-        # client fallbacks fail before a PO token is requested.
-        pot_base_url = (
-            os.getenv("YTDLP_YOUTUBE_POT_BASE_URL")
-            or "http://127.0.0.1:4416"
-        ).strip()
-        if pot_base_url:
-            extractor_args.setdefault("youtubepot-bgutilhttp", {})["base_url"] = [
-                pot_base_url
-            ]
+    wpc_available = bool(wpc_browser_path and os.path.isfile(wpc_browser_path))
+    if wpc_available:
+        extractor_args.setdefault("youtubepot-wpc", {})["browser_path"] = [
+            wpc_browser_path
+        ]
+        if not player_client:
+            extractor_args.setdefault("youtube", {})["player_client"] = ["mweb"]
 
     override_extractor_args = overrides.pop("extractor_args", None)
     if isinstance(override_extractor_args, dict):
@@ -216,7 +211,7 @@ def build_ytdlp_youtube_options(**overrides: Any) -> dict[str, Any]:
 
     youtube_args = extractor_args.get("youtube", {})
     selected_clients = youtube_args.get("player_client", [])
-    if any(client in {"mweb", "web_creator"} for client in selected_clients):
+    if wpc_available or any(client in {"mweb", "web_creator"} for client in selected_clients):
         youtube_args["fetch_pot"] = ["always"]
         youtube_args["pot_trace"] = ["true"]
         extractor_args["youtube"] = youtube_args
