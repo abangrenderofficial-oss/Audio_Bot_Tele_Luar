@@ -14,6 +14,9 @@ const HOST = process.env.POT_ADAPTER_HOST || "127.0.0.1";
 const PORT = Number(process.env.POT_ADAPTER_PORT || "4417");
 const ATTEMPTS = Number(process.env.POT_ADAPTER_ATTEMPTS || "30");
 const RETRY_MS = Number(process.env.POT_ADAPTER_RETRY_MS || "500");
+const EXTERNAL_PROVIDER_PROXY = String(
+  process.env.POT_PROVIDER_PROXY || ""
+).trim();
 
 const WARP_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.COBALT_WARP_ENABLED || "")
@@ -497,9 +500,10 @@ async function fetchSession() {
   let lastError = "provider unavailable";
   await ensureProviderRunning();
 
-  const proxy = WARP_ENABLED
-    ? `socks5h://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}`
-    : undefined;
+  const proxy = EXTERNAL_PROVIDER_PROXY ||
+    (WARP_ENABLED
+      ? `socks5h://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}`
+      : undefined);
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
