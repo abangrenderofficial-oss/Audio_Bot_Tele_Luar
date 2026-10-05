@@ -223,6 +223,20 @@ def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[s
 
 
 def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
+    low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
+    piped_metadata_error: Exception | None = None
+
+    if low_memory_mode and _configured_piped_api_urls():
+        try:
+            logging.info("YouTube low-memory mode: trying Piped metadata first")
+            return _extract_piped_info_sync(url)
+        except Exception as exc:
+            piped_metadata_error = exc
+            logging.warning(
+                "Piped metadata failed; trying one primary yt-dlp metadata request: error=%s",
+                exc,
+            )
+
     try:
         return _extract_info_once(url)
     except MusicDownloadError:
@@ -230,12 +244,26 @@ def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
     except Exception as first_error:
         if source != "youtube":
             raise MusicDownloadError(str(first_error)) from first_error
+
+        errors: list[str] = []
+        if piped_metadata_error is not None:
+            errors.append(f"piped-metadata: {piped_metadata_error}")
+        errors.append(f"primary: {first_error}")
+        last_error: Exception = first_error
+
+        if low_memory_mode:
+            logging.warning(
+                "YouTube low-memory metadata mode exhausted without public-client fan-out: error=%s",
+                first_error,
+            )
+            raise MusicDownloadError(
+                "\n--- YouTube low-memory metadata retries ---\n" + "\n".join(errors)
+            ) from last_error
+
         logging.warning(
             "Primary YouTube metadata extraction failed; trying public clients: error=%s",
             first_error,
         )
-        errors = [f"primary: {first_error}"]
-        last_error: Exception = first_error
         for client, _format_spec in YOUTUBE_PUBLIC_FALLBACK_PROFILES:
             try:
                 logging.info("Trying YouTube metadata client: %s", client)
@@ -327,6 +355,54 @@ def _env_truthy(name: str) -> bool:
 
 def _youtube_low_memory_mode() -> bool:
     return _env_truthy("YOUTUBE_LOW_MEMORY_MODE")
+
+
+def _extract_piped_info_sync(url: str) -> dict[str, Any]:
+    api_urls = _configured_piped_api_urls()
+    if not api_urls:
+        raise MusicDownloadError("Piped metadata is not configured")
+
+    video_id = _youtube_video_id(url)
+    if not video_id:
+        raise MusicDownloadError("Unable to extract YouTube video id for Piped metadata")
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "AbangRender-MusicBot/1.0",
+    }
+    errors: list[str] = []
+    with httpx.Client(
+        timeout=httpx.Timeout(20.0, connect=8.0),
+        follow_redirects=True,
+    ) as client:
+        for api_url in api_urls:
+            try:
+                logging.info("Trying Piped YouTube metadata: instance=%s", api_url)
+                response = client.get(f"{api_url}/streams/{video_id}", headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict) or not data.get("title"):
+                    raise MusicDownloadError("Piped returned incomplete metadata")
+                return {
+                    "id": video_id,
+                    "title": data.get("title"),
+                    "uploader": data.get("uploader") or data.get("uploaderName"),
+                    "channel": data.get("uploader") or data.get("uploaderName"),
+                    "duration": data.get("duration"),
+                    "thumbnail": data.get("thumbnailUrl") or data.get("thumbnail"),
+                    "webpage_url": url,
+                }
+            except Exception as exc:
+                errors.append(f"{api_url}: {exc}")
+                logging.warning(
+                    "Piped YouTube metadata failed: instance=%s error=%s",
+                    api_url,
+                    exc,
+                )
+
+    raise MusicDownloadError(
+        "Piped YouTube metadata failed\n" + "\n".join(errors)
+    )
 
 
 def _youtube_video_id(url: str) -> str | None:
