@@ -89,7 +89,7 @@ async def _process_supported_link(message: types.Message, service: str, url: str
         chat_type=getattr(getattr(message, "chat", None), "type", None),
     )
 
-    if service in {"youtube", "tiktok", "instagram", "threads", "twitter"}:
+    if service in {"youtube", "tiktok", "instagram", "threads", "twitter", "pinterest"}:
         from handlers import music
         await music.process_music_link(message, service=service, url=url)
         return
@@ -103,12 +103,6 @@ async def _process_supported_link(message: types.Message, service: str, url: str
         from handlers import spotify
         await spotify.process_spotify_url(message, url=url)
         return
-
-    if service == "pinterest":
-        from handlers import pinterest
-        await pinterest.process_pinterest_url(message, url=url)
-        return
-
 
 
 def _has_multiple_supported_links(message: types.Message) -> bool:
