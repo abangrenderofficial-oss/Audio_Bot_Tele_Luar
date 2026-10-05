@@ -17,6 +17,8 @@ from yt_dlp import YoutubeDL
 from services.logger import logger as logging
 from services.platforms.youtube_media import build_ytdlp_youtube_options
 from services.platforms.ytdlp_helpers import mp3_extract_postprocessors
+from utils.cobalt_client import fetch_cobalt_data
+from utils.cobalt_media import parse_cobalt_media_response
 
 logging = logging.bind(service="music_download")
 
@@ -29,6 +31,7 @@ SEGMENT_SECONDS = 2400
 MUSIC_AUDIO_CACHE_VARIANT = "music_adaptive_mp3_v1"
 PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 INVIDIOUS_MAX_SOURCE_BYTES = 150 * 1024 * 1024
+COBALT_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
     ("web_creator", "bestaudio/best"),
     ("mweb", "bestaudio/best"),
@@ -1276,6 +1279,142 @@ def _run_ytdlp_mp3_sync(
         ) from last_error
 
 
+def _cobalt_music_configured() -> bool:
+    return bool(
+        (os.getenv("COBALT_API_URL") or "").strip()
+        and (os.getenv("COBALT_API_KEY") or "").strip()
+    )
+
+
+def _convert_cobalt_audio_source_sync(
+    media_url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    base_path = out_template.replace(".%(ext)s", "")
+    raw_path = f"{base_path}.cobalt-source"
+    expected = f"{base_path}.mp3"
+    total = 0
+
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=15.0),
+            follow_redirects=True,
+        ) as client:
+            with client.stream(
+                "GET",
+                media_url,
+                headers={"User-Agent": "AbangRender-MusicBot/1.0"},
+            ) as response:
+                response.raise_for_status()
+                content_type = (response.headers.get("content-type") or "").lower()
+                if content_type.startswith("text/") or "json" in content_type:
+                    raise MusicDownloadError(
+                        f"Cobalt media endpoint returned non-media content: {content_type or 'unknown'}"
+                    )
+                with open(raw_path, "wb") as handle:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > COBALT_MAX_SOURCE_BYTES:
+                            raise MusicDownloadError("Cobalt audio source exceeded safety limit")
+                        handle.write(chunk)
+
+        if total <= 0:
+            raise MusicDownloadError("Cobalt audio source was empty")
+
+        process = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                raw_path,
+                "-map",
+                "0:a:0?",
+                "-vn",
+                "-ac",
+                "2",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                f"{int(bitrate_kbps)}k",
+                expected,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        if process.returncode != 0 or not os.path.isfile(expected):
+            error_text = (process.stderr or "").strip()
+            raise MusicDownloadError(
+                "Cobalt ffmpeg conversion failed"
+                + (f": {error_text[-500:]}" if error_text else "")
+            )
+
+        logging.info(
+            "Cobalt YouTube Music fallback succeeded: source_bytes=%s",
+            total,
+        )
+        return expected
+    finally:
+        try:
+            os.remove(raw_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+async def _run_cobalt_mp3(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    base_url = (os.getenv("COBALT_API_URL") or "").strip()
+    api_key = (os.getenv("COBALT_API_KEY") or "").strip()
+    if not base_url or not api_key:
+        raise MusicDownloadError("Cobalt fallback is not configured")
+
+    logging.info("Trying Cobalt YouTube Music fallback")
+    data = await fetch_cobalt_data(
+        base_url,
+        api_key,
+        {
+            "url": url,
+            "downloadMode": "audio",
+            "alwaysProxy": True,
+            "localProcessing": "disabled",
+        },
+        source="youtube_music",
+        timeout=20,
+        attempts=2,
+    )
+    if not data:
+        raise MusicDownloadError("Cobalt returned no usable response")
+
+    parsed = parse_cobalt_media_response(
+        data,
+        audio_only=True,
+        allow_multi_tunnel=True,
+        source="youtube_music",
+    )
+    if not parsed or not parsed.items:
+        raise MusicDownloadError("Cobalt returned no usable audio media")
+
+    media_url = parsed.items[0][0]
+    return await asyncio.to_thread(
+        _convert_cobalt_audio_source_sync,
+        media_url,
+        out_template,
+        bitrate_kbps,
+    )
+
+
 async def _download_mp3(
     url: str,
     *,
@@ -1284,13 +1423,30 @@ async def _download_mp3(
     source: str,
 ) -> str:
     out_template = os.path.join(work_dir, "source.%(ext)s")
-    return await asyncio.to_thread(
-        _run_ytdlp_mp3_sync,
-        url,
-        out_template,
-        bitrate_kbps,
-        source,
-    )
+    try:
+        return await asyncio.to_thread(
+            _run_ytdlp_mp3_sync,
+            url,
+            out_template,
+            bitrate_kbps,
+            source,
+        )
+    except MusicDownloadError as first_error:
+        if source != "youtube":
+            raise
+        if not _cobalt_music_configured():
+            logging.warning(
+                "Cobalt YouTube Music fallback unavailable: COBALT_API_URL/COBALT_API_KEY not configured"
+            )
+            raise
+
+        _clear_ytdlp_outputs(out_template)
+        try:
+            return await _run_cobalt_mp3(url, out_template, bitrate_kbps)
+        except Exception as cobalt_error:
+            raise MusicDownloadError(
+                f"{first_error}\n--- Cobalt fallback ---\n{cobalt_error}"
+            ) from cobalt_error
 
 
 async def _transcode_to_128k(source_path: str, target_path: str) -> str:
