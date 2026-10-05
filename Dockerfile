@@ -13,3 +13,16 @@ if needle not in s:
     raise SystemExit('official server.py route layout changed')
 p.write_text(s.replace(needle, replacement, 1))
 PY
+
+# Render containers run Chromium in a restricted/root-style container environment.
+# nodriver needs the Chromium sandbox disabled here so the trusted-session page can execute normally.
+RUN python - <<'PY'
+from pathlib import Path
+p = Path('/app/potoken_generator/extractor.py')
+s = p.read_text()
+needle = "                                               user_data_dir=self.profile_path)"
+replacement = "                                               user_data_dir=self.profile_path,\n                                               no_sandbox=True)"
+if needle not in s:
+    raise SystemExit('official extractor.py nodriver.start layout changed')
+p.write_text(s.replace(needle, replacement, 1))
+PY
