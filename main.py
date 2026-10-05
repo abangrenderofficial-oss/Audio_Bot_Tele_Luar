@@ -358,6 +358,16 @@ async def _run_music_selftest_from_env() -> None:
     result = None
     try:
         logging.info("[SELFTEST] Starting YouTube Music self-test: %s", url)
+        from services.storage.music_cache import get_cached_audio
+
+        cache_probe_started = asyncio.get_running_loop().time()
+        cache_probe = await get_cached_audio(url, variant="mp3_320")
+        logging.info(
+            "[SELFTEST] Persistent cache probe OK: hit=%s seconds=%.2f",
+            bool(cache_probe),
+            asyncio.get_running_loop().time() - cache_probe_started,
+        )
+
         metadata = await fetch_music_metadata(
             url,
             source="youtube",
