@@ -31,6 +31,10 @@ _guest_tasks: set[asyncio.Task[None]] = set()
 
 router = Router(name=__name__)
 
+MUSIC_GUEST_REDIRECT_SERVICES = frozenset(
+    {"youtube", "tiktok", "instagram", "threads", "twitter"}
+)
+
 
 def _get_service_sender(service: str):
     if service == "tiktok":
@@ -371,19 +375,24 @@ async def handle_guest_message(
         action_name=f"guest_{service}_download",
     )
 
-    sender_func = _get_service_sender(service)
+    sender_func = (
+        None
+        if service in MUSIC_GUEST_REDIRECT_SERVICES
+        else _get_service_sender(service)
+    )
     if sender_func is None:
-        # Platform does not have an inline/guest sender (e.g. spotify)
+        # Music-first services are completed in private chat so guest/inline
+        # mode cannot fall through to the legacy video delivery path.
         from services.inline.album_links import create_inline_album_request
 
         token = create_inline_album_request(user_id, service, url)
         article = InlineQueryResultArticle(
             id=f"guest_{service}_{token}",
-            title=f"{service.capitalize()} Link",
-            description=f"Open in bot to download {service.capitalize()} media.",
+            title=f"{service.capitalize()} MP3",
+            description=f"Open MP3 Music Bot to convert this {service.capitalize()} link.",
             thumbnail_url=get_inline_service_icon(service),
             input_message_content=InputTextMessageContent(
-                message_text=f"🎵 <b>{service.capitalize()} Media</b>\n\nTap below to open in private chat with the bot and download.",
+                message_text=f"🎵 <b>{service.capitalize()} → MP3</b>\n\nTap below to open the Music Bot and convert this link.",
                 parse_mode="HTML",
             ),
             reply_markup=types.InlineKeyboardMarkup(
