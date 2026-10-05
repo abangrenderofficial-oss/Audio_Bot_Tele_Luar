@@ -1386,9 +1386,8 @@ async def _run_cobalt_mp3(
         {
             "url": url,
             "downloadMode": "audio",
-            "videoQuality": "max",
-            "youtubeBetterAudio": True,
-            "alwaysProxy": True,
+            "youtubeBetterAudio": False,
+            "alwaysProxy": False,
             "localProcessing": "disabled",
         },
         source="youtube_music",
