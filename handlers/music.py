@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 from typing import Optional
 
 from aiogram import Router, types
@@ -199,7 +200,7 @@ async def process_music_link(
                 audio=cached_file_id,
                 title=metadata.title,
                 performer=metadata.performer,
-                caption=f"🎵 {metadata.title}",
+                caption=f"🎵 {html.escape(metadata.title)}",
                 bot_url=bot_url,
                 duration=metadata.duration,
                 parse_mode="HTML",
@@ -238,14 +239,14 @@ async def process_music_link(
                 title = f"{metadata.title} — Part {index}"
                 filename_title = f"{metadata.file_base} — Part {index}"
                 caption = (
-                    f"🎵 {metadata.title}\n"
+                    f"🎵 {html.escape(metadata.title)}\n"
                     f"Part {index}/{total_parts} • {result.bitrate_kbps} kbps"
                 )
                 duration = None
             else:
                 title = metadata.title
                 filename_title = metadata.file_base
-                caption = f"🎵 {metadata.title}\n{result.bitrate_kbps} kbps"
+                caption = f"🎵 {html.escape(metadata.title)}\n{result.bitrate_kbps} kbps"
                 duration = metadata.duration
 
             prepared = await prepare_mp3_metadata(
