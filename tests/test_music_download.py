@@ -168,3 +168,58 @@ def test_low_memory_youtube_mode_falls_back_to_one_primary_ytdlp(monkeypatch):
 
     assert result == "/tmp/primary.mp3"
     assert calls == ["piped", ("yt-dlp", {})]
+
+
+def test_low_memory_metadata_prefers_piped(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "true")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    expected = {
+        "id": "Ftffph3fVEs",
+        "title": "Piped Song",
+        "uploader": "Piped Artist",
+        "duration": 240,
+    }
+    monkeypatch.setattr(
+        music_download,
+        "_extract_piped_info_sync",
+        lambda _url: expected,
+    )
+    monkeypatch.setattr(
+        music_download,
+        "_extract_info_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("yt-dlp metadata should not run after successful Piped")
+        ),
+    )
+
+    assert music_download._extract_info_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "youtube",
+    ) == expected
+
+
+def test_low_memory_metadata_falls_back_to_one_primary_ytdlp(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "yes")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    calls = []
+
+    def fail_piped(_url):
+        calls.append("piped")
+        raise RuntimeError("piped metadata unavailable")
+
+    def primary(_url, **kwargs):
+        calls.append(("yt-dlp", kwargs))
+        return {"id": "Ftffph3fVEs", "title": "Primary Song"}
+
+    monkeypatch.setattr(music_download, "_extract_piped_info_sync", fail_piped)
+    monkeypatch.setattr(music_download, "_extract_info_once", primary)
+
+    result = music_download._extract_info_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "youtube",
+    )
+
+    assert result["title"] == "Primary Song"
+    assert calls == ["piped", ("yt-dlp", {})]
