@@ -14,4 +14,4 @@ pillow==12.3.0
 psycopg2-binary==2.9.12
 python-dotenv==1.2.3
 yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/2026.09.27.232945/yt-dlp.tar.gz
-bgutil-ytdlp-pot-provider==2.0.1
+yt-dlp-getpot-wpc==1.1.2
