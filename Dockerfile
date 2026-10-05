@@ -31,7 +31,19 @@ RUN python -m venv "$VIRTUAL_ENV"
 COPY requirements.txt ./
 
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --python "$VIRTUAL_ENV/bin/python" -r requirements.txt
+    uv pip install --python "$VIRTUAL_ENV/bin/python" -r requirements.txt && \
+    "$VIRTUAL_ENV/bin/python" - <<'PY'
+from pathlib import Path
+
+cdp_dir = Path("/opt/venv/lib/python3.14/site-packages/nodriver/cdp")
+for path in cdp_dir.glob("*.py"):
+    raw = path.read_bytes()
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        path.write_text(raw.decode("latin-1"), encoding="utf-8")
+        print(f"normalized nodriver source to UTF-8: {path.name}")
+PY
 
 FROM python:3.14-slim
 ARG TARGETARCH
