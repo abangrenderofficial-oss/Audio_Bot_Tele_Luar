@@ -79,7 +79,13 @@ def build_music_cache_key(source_url: str) -> str:
     clean_url = (source_url or "").strip()
     if not clean_url:
         raise ValueError("source_url must not be empty")
-    return f"{clean_url}#{MUSIC_AUDIO_CACHE_VARIANT}"
+
+    # Canonicalize YouTube watch/share URLs to the video id. Radio/playlist
+    # query params (list/start_radio/etc.) otherwise create duplicate cache
+    # entries for the exact same song and force an unnecessary re-download.
+    video_id = _youtube_video_id(clean_url)
+    cache_source = f"https://www.youtube.com/watch?v={video_id}" if video_id else clean_url
+    return f"{cache_source}#{MUSIC_AUDIO_CACHE_VARIANT}"
 
 
 def _clean_text(value: object, fallback: str = "Audio", *, limit: int = 120) -> str:
@@ -225,7 +231,14 @@ def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[s
 
 
 def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
-    low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
+    # Once the isolated YouTube worker is configured, the public Invidious/
+    # Piped metadata fan-out is no longer the primary path. Those relays are
+    # frequently 401/403 and were adding several seconds before every song.
+    low_memory_mode = (
+        source == "youtube"
+        and _youtube_low_memory_mode()
+        and not _youtube_worker_configured()
+    )
     invidious_metadata_error: Exception | None = None
     piped_metadata_error: Exception | None = None
 
