@@ -391,7 +391,7 @@ async function requestProvider(body) {
 async function fetchSession() {
   let lastError = "provider unavailable";
   const proxy = WARP_ENABLED
-    ? `http://${WARP_HTTP_HOST}:${WARP_HTTP_PORT}`
+    ? `socks5h://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}`
     : undefined;
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
