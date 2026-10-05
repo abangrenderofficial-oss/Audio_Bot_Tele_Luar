@@ -522,7 +522,8 @@ async function fetchSession() {
       console.log(
         `[POT-ADAPTER] minted WEB_EMBEDDED session via ${proxy ? "WARP" : "direct"} egress`
       );
-      scheduleProviderStop();
+      // Keep the bgutil provider warm. Killing it after every token mint caused
+      // the next Cobalt refresh to race user requests and return youtube.login.
       return JSON.stringify(embedded);
     } catch (error) {
       lastError = error?.message || String(error);
