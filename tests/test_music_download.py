@@ -3,6 +3,7 @@ from services.media.music_download import (
     MIN_SINGLE_FILE_KBPS,
     SEGMENT_SECONDS,
     SPLIT_BITRATE_KBPS,
+    build_music_cache_key,
     build_music_metadata,
     choose_adaptive_bitrate,
     make_music_plan,
@@ -78,3 +79,9 @@ def test_social_metadata_falls_back_to_original_sound_username():
 
     assert metadata.title == "Original sound — @creator123"
     assert metadata.file_base == "Original sound — @creator123"
+
+
+def test_music_cache_key_is_isolated_from_legacy_audio_cache():
+    key = build_music_cache_key("https://youtu.be/demo")
+    assert key == "https://youtu.be/demo#music_adaptive_mp3_v1"
+    assert "audio_artist_dedupe" not in key
