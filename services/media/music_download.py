@@ -510,12 +510,12 @@ def _extract_invidious_info_sync(url: str) -> dict[str, Any]:
     }
 
 
-def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+def _invidious_audio_streams(data: dict[str, Any]) -> list[dict[str, Any]]:
     streams = data.get("adaptiveFormats")
     if not isinstance(streams, list):
-        return None
+        return []
 
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     for item in streams:
         if not isinstance(item, dict):
             continue
@@ -528,16 +528,30 @@ def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
             continue
         candidates.append(item)
 
-    if not candidates:
-        return None
-
-    def _score(item: dict[str, Any]) -> int:
+    def _score(item: dict[str, Any]) -> tuple[int, int]:
+        probe = " ".join(
+            (
+                str(item.get("type") or "").lower(),
+                str(item.get("container") or "").lower(),
+                str(item.get("encoding") or "").lower(),
+            )
+        )
+        # MP4/M4A is more tolerant across public Invidious proxies than WebM.
+        stable_container = int(
+            "mp4" in probe or "m4a" in probe or "aac" in probe
+        )
         try:
-            return int(item.get("bitrate") or 0)
+            bitrate = int(item.get("bitrate") or 0)
         except (TypeError, ValueError):
-            return 0
+            bitrate = 0
+        return stable_container, bitrate
 
-    return max(candidates, key=_score)
+    return sorted(candidates, key=_score, reverse=True)
+
+
+def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = _invidious_audio_streams(data)
+    return candidates[0] if candidates else None
 
 
 def _invidious_raw_extension(stream: dict[str, Any]) -> str:
@@ -554,93 +568,209 @@ def _invidious_raw_extension(stream: dict[str, Any]) -> str:
     return "audio"
 
 
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _invidious_expected_bytes(
+    stream: dict[str, Any],
+    response: httpx.Response,
+) -> int | None:
+    stream_length = _positive_int(
+        stream.get("contentLength")
+        or stream.get("content_length")
+        or stream.get("clen")
+    )
+    response_length = _positive_int(response.headers.get("content-length"))
+    if stream_length and response_length:
+        return max(stream_length, response_length)
+    return stream_length or response_length
+
+
+def _looks_like_invidious_media(path: str, extension: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return False
+
+    if not head:
+        return False
+    if extension == "webm":
+        return head.startswith(b"\x1a\x45\xdf\xa3")
+    if extension == "m4a":
+        return b"ftyp" in head[:32]
+    if extension == "ogg":
+        return head.startswith(b"OggS")
+    return not head.lstrip().startswith((b"<", b"{", b"["))
+
+
+def _download_invidious_candidate(
+    *,
+    media_url: str,
+    raw_path: str,
+    stream: dict[str, Any],
+) -> tuple[int, str]:
+    headers = {
+        "User-Agent": "AbangRender-MusicBot/1.0",
+        "Accept": "*/*",
+        "Range": "bytes=0-",
+    }
+    total = 0
+    content_type = ""
+    with httpx.Client(
+        timeout=httpx.Timeout(75.0, connect=10.0),
+        follow_redirects=True,
+    ) as client:
+        with client.stream("GET", media_url, headers=headers) as response:
+            response.raise_for_status()
+            content_type = (response.headers.get("content-type") or "").lower()
+            expected_bytes = _invidious_expected_bytes(stream, response)
+            with open(raw_path, "wb") as handle:
+                for chunk in response.iter_bytes(1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > INVIDIOUS_MAX_SOURCE_BYTES:
+                        raise MusicDownloadError(
+                            "Invidious audio source exceeded safety limit"
+                        )
+                    handle.write(chunk)
+
+    if total <= 0:
+        raise MusicDownloadError("Invidious audio source was empty")
+
+    expected_bytes = _positive_int(
+        stream.get("contentLength")
+        or stream.get("content_length")
+        or stream.get("clen")
+    )
+    if expected_bytes and total < expected_bytes:
+        raise MusicDownloadError(
+            f"Invidious audio source truncated: received={total} expected={expected_bytes}"
+        )
+
+    extension = _invidious_raw_extension(stream)
+    if not _looks_like_invidious_media(raw_path, extension):
+        raise MusicDownloadError(
+            "Invidious audio body did not match the advertised media container"
+            f" (type={content_type or 'unknown'}, bytes={total})"
+        )
+
+    return total, content_type
+
+
 def _run_invidious_mp3_sync(
     url: str,
     out_template: str,
     bitrate_kbps: int,
 ) -> str:
     data, api_url = _fetch_invidious_video_sync(url)
-    stream = _pick_invidious_audio_stream(data)
-    if stream is None:
+    streams = _invidious_audio_streams(data)
+    if not streams:
         raise MusicDownloadError("Invidious returned no usable audio stream")
-
-    media_url = urljoin(f"{api_url}/", str(stream["url"]))
-    media_host = (urlparse(media_url).hostname or "").lower()
-    if media_host in {"localhost", "127.0.0.1", "::1"}:
-        raise MusicDownloadError("Invidious returned unsafe local media URL")
 
     base_path = out_template.replace(".%(ext)s", "")
     expected = f"{base_path}.mp3"
-    raw_path = f"{base_path}.invidious.{_invidious_raw_extension(stream)}"
-    headers = {"User-Agent": "AbangRender-MusicBot/1.0"}
+    errors: list[str] = []
 
-    try:
-        total = 0
-        with httpx.Client(
-            timeout=httpx.Timeout(60.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            with client.stream("GET", media_url, headers=headers) as response:
-                response.raise_for_status()
-                with open(raw_path, "wb") as handle:
-                    for chunk in response.iter_bytes(1024 * 1024):
-                        if not chunk:
-                            continue
-                        total += len(chunk)
-                        if total > INVIDIOUS_MAX_SOURCE_BYTES:
-                            raise MusicDownloadError(
-                                "Invidious audio source exceeded safety limit"
-                            )
-                        handle.write(chunk)
+    for index, stream in enumerate(streams, start=1):
+        media_url = urljoin(f"{api_url}/", str(stream["url"]))
+        media_host = (urlparse(media_url).hostname or "").lower()
+        if media_host in {"localhost", "127.0.0.1", "::1"}:
+            errors.append(f"candidate {index}: unsafe local media URL")
+            continue
 
-        if total <= 0:
-            raise MusicDownloadError("Invidious audio source was empty")
+        extension = _invidious_raw_extension(stream)
+        raw_path = f"{base_path}.invidious-{index}.{extension}"
+        try:
+            try:
+                os.remove(expected)
+            except FileNotFoundError:
+                pass
 
-        process = subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                raw_path,
-                "-map",
-                "0:a:0?",
-                "-vn",
-                "-ac",
-                "2",
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                f"{int(bitrate_kbps)}k",
-                expected,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=240,
-            check=False,
-        )
-        if process.returncode != 0 or not os.path.isfile(expected):
-            error_text = (process.stderr or "").strip()
-            raise MusicDownloadError(
-                "Invidious ffmpeg conversion failed"
-                + (f": {error_text[-500:]}" if error_text else "")
+            total, content_type = _download_invidious_candidate(
+                media_url=media_url,
+                raw_path=raw_path,
+                stream=stream,
+            )
+            logging.info(
+                "Invidious audio candidate downloaded: instance=%s candidate=%s "
+                "container=%s source_bytes=%s content_type=%s bitrate=%s",
+                api_url,
+                index,
+                extension,
+                total,
+                content_type or "unknown",
+                stream.get("bitrate"),
             )
 
-        logging.info(
-            "Invidious YouTube fallback succeeded: instance=%s source_bytes=%s",
-            api_url,
-            total,
-        )
-        return expected
-    finally:
-        try:
-            os.remove(raw_path)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+            process = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    raw_path,
+                    "-map",
+                    "0:a:0?",
+                    "-vn",
+                    "-ac",
+                    "2",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    f"{int(bitrate_kbps)}k",
+                    expected,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=240,
+                check=False,
+            )
+            if process.returncode != 0 or not os.path.isfile(expected):
+                error_text = (process.stderr or "").strip()
+                raise MusicDownloadError(
+                    "ffmpeg conversion failed"
+                    + (f": {error_text[-500:]}" if error_text else "")
+                )
+
+            logging.info(
+                "Invidious YouTube fallback succeeded: instance=%s candidate=%s "
+                "container=%s source_bytes=%s",
+                api_url,
+                index,
+                extension,
+                total,
+            )
+            return expected
+        except Exception as exc:
+            errors.append(f"candidate {index} ({extension}): {exc}")
+            logging.warning(
+                "Invidious audio candidate failed: instance=%s candidate=%s "
+                "container=%s error=%s",
+                api_url,
+                index,
+                extension,
+                exc,
+            )
+        finally:
+            try:
+                os.remove(raw_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    raise MusicDownloadError(
+        "Invidious audio candidates exhausted\n" + "\n".join(errors)
+    )
 
 
 def _youtube_video_id(url: str) -> str | None:
