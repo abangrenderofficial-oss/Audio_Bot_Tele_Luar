@@ -82,7 +82,7 @@ new_start = """                browser = await nodriver.start(headless=False,
                                                    "--proxy-server=socks5://127.0.0.1:1080",
                                                    "--autoplay-policy=no-user-gesture-required",
                                                ],
-                                               no_sandbox=True)"""
+                                               sandbox=False)"""
 if old_start not in s:
     raise SystemExit('official extractor.py nodriver.start layout changed')
 s = s.replace(old_start, new_start, 1)
@@ -246,6 +246,29 @@ echo "[WARP] verified for trusted-session generator"
 
 Xvfb :99 -ac -screen 0 "${XVFB_WHD:-1280x720x16}" -nolisten tcp >/dev/null 2>&1 &
 sleep 2
+
+echo "[BROWSER] running Chromium DevTools smoke test"
+env DISPLAY=:99 chromium-browser \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --proxy-server=socks5://127.0.0.1:1080 \
+  --user-data-dir=/tmp/chromium-smoke \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  about:blank >/tmp/chromium-smoke.out 2>/tmp/chromium-smoke.err &
+CHROMEPID=$!
+sleep 3
+if ! curl -fsS --max-time 3 http://127.0.0.1:9222/json/version >/tmp/chromium-version.json; then
+  echo "[BROWSER] smoke test failed" >&2
+  cat /tmp/chromium-smoke.err >&2 || true
+  kill "$CHROMEPID" 2>/dev/null || true
+  exit 1
+fi
+echo "[BROWSER] DevTools smoke test passed"
+kill "$CHROMEPID" 2>/dev/null || true
+wait "$CHROMEPID" 2>/dev/null || true
+rm -rf /tmp/chromium-smoke
+
 exec env DISPLAY=:99 python /app/potoken-generator.py --bind 0.0.0.0
 SH
 
