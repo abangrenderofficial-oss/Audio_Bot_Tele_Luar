@@ -1307,13 +1307,25 @@ def _run_ytdlp_mp3_sync(
         ) from last_error
 
 
+RAILWAY_YOUTUBE_WORKER_URL = (
+    "https://music-youtube-audio-worker-production.up.railway.app"
+)
+
+
 def _youtube_worker_base_url() -> str:
-    return (os.getenv("YOUTUBE_WORKER_URL") or "").strip().rstrip("/")
+    # Keep the Music Bot pinned to the isolated Railway worker. Other
+    # experiments may still use YOUTUBE_WORKER_URL, but must not hijack this
+    # production audio path.
+    return (
+        (os.getenv("RAILWAY_YOUTUBE_WORKER_URL") or "").strip()
+        or RAILWAY_YOUTUBE_WORKER_URL
+    ).rstrip("/")
 
 
 def _youtube_worker_auth_token() -> str:
     return (
-        (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+        (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
+        or (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
         or (os.getenv("BOT_TOKEN") or "").strip()
     )
 
