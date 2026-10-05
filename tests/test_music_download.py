@@ -237,6 +237,33 @@ def test_invidious_api_urls_keep_https_urls_intact(monkeypatch):
     ]
 
 
+def test_invidious_audio_streams_are_sorted_by_bitrate():
+    data = {
+        "adaptiveFormats": [
+            {"url": "https://cdn.example/a128", "type": "audio/webm", "bitrate": 128_000},
+            {"url": "https://cdn.example/a160", "type": "audio/mp4", "bitrate": 160_000},
+            {"url": "https://cdn.example/video", "type": "video/mp4", "bitrate": 2_000_000},
+        ]
+    }
+
+    streams = music_download._invidious_audio_streams(data)
+
+    assert [stream["url"] for stream in streams] == [
+        "https://cdn.example/a160",
+        "https://cdn.example/a128",
+    ]
+
+
+def test_curl_proxy_promotes_socks5_to_remote_dns(monkeypatch):
+    monkeypatch.setenv("YTDLP_YOUTUBE_PROXY", "socks5://127.0.0.1:1080")
+    assert music_download._curl_proxy_url() == "socks5h://127.0.0.1:1080"
+
+
+def test_curl_proxy_keeps_https_proxy(monkeypatch):
+    monkeypatch.setenv("YTDLP_YOUTUBE_PROXY", "https://proxy.example:8443")
+    assert music_download._curl_proxy_url() == "https://proxy.example:8443"
+
+
 def test_pick_invidious_audio_stream_prefers_highest_bitrate_audio():
     data = {
         "adaptiveFormats": [
