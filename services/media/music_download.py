@@ -23,6 +23,11 @@ BITRATE_CHOICES_KBPS = (320, 256, 224, 192, 160, 128)
 MIN_SINGLE_FILE_KBPS = 128
 SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
+YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["web_safari", "web_embedded", "tv"],
+    }
+}
 
 _SOURCE_LABELS = {
     "youtube": "YouTube",
@@ -178,10 +183,14 @@ def make_music_plan(duration_seconds: float | int | None) -> MusicPlan:
     return MusicPlan(mode="single", bitrate_kbps=bitrate)
 
 
-def _extract_info_sync(url: str) -> dict[str, Any]:
+def _extract_info_once(url: str, *, youtube_public_fallback: bool = False) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    if youtube_public_fallback:
+        overrides["extractor_args"] = YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS
     options = build_ytdlp_youtube_options(
         skip_download=True,
         ignore_no_formats_error=True,
+        **overrides,
     )
     with YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -192,6 +201,28 @@ def _extract_info_sync(url: str) -> dict[str, Any]:
     return info
 
 
+def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
+    try:
+        return _extract_info_once(url)
+    except MusicDownloadError:
+        raise
+    except Exception as first_error:
+        if source != "youtube":
+            raise MusicDownloadError(str(first_error)) from first_error
+        logging.warning(
+            "Primary YouTube metadata extraction failed; trying public clients: error=%s",
+            first_error,
+        )
+        try:
+            return _extract_info_once(url, youtube_public_fallback=True)
+        except MusicDownloadError:
+            raise
+        except Exception as fallback_error:
+            raise MusicDownloadError(
+                f"{first_error}\n--- YouTube public fallback ---\n{fallback_error}"
+            ) from fallback_error
+
+
 async def fetch_music_metadata(
     url: str,
     *,
@@ -199,18 +230,37 @@ async def fetch_music_metadata(
     timeout_seconds: float = 45.0,
 ) -> MusicMetadata:
     info = await asyncio.wait_for(
-        asyncio.to_thread(_extract_info_sync, url),
+        asyncio.to_thread(_extract_info_sync, url, source),
         timeout=max(1.0, float(timeout_seconds)),
     )
     return build_music_metadata(info, source=source, source_url=url)
 
 
-def _run_ytdlp_mp3_sync(url: str, out_template: str, bitrate_kbps: int) -> str:
+def _clear_ytdlp_outputs(out_template: str) -> None:
+    base_path = out_template.replace(".%(ext)s", "")
+    for path in glob.glob(f"{base_path}.*"):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def _run_ytdlp_mp3_once(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+    *,
+    youtube_public_fallback: bool = False,
+) -> str:
+    overrides: dict[str, Any] = {}
+    if youtube_public_fallback:
+        overrides["extractor_args"] = YOUTUBE_PUBLIC_FALLBACK_EXTRACTOR_ARGS
     options = build_ytdlp_youtube_options(
         format="bestaudio/best",
         outtmpl=out_template,
         postprocessors=mp3_extract_postprocessors(str(int(bitrate_kbps))),
         merge_output_format="mp3",
+        **overrides,
     )
     with YoutubeDL(options) as ydl:
         ydl.download([url])
@@ -226,11 +276,45 @@ def _run_ytdlp_mp3_sync(url: str, out_template: str, bitrate_kbps: int) -> str:
     raise MusicDownloadError(f"MP3 output file missing: {base_path}")
 
 
+def _run_ytdlp_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+    source: str,
+) -> str:
+    try:
+        return _run_ytdlp_mp3_once(url, out_template, bitrate_kbps)
+    except MusicDownloadError:
+        raise
+    except Exception as first_error:
+        if source != "youtube":
+            raise MusicDownloadError(str(first_error)) from first_error
+        logging.warning(
+            "Primary YouTube audio download failed; trying public clients: error=%s",
+            first_error,
+        )
+        _clear_ytdlp_outputs(out_template)
+        try:
+            return _run_ytdlp_mp3_once(
+                url,
+                out_template,
+                bitrate_kbps,
+                youtube_public_fallback=True,
+            )
+        except MusicDownloadError:
+            raise
+        except Exception as fallback_error:
+            raise MusicDownloadError(
+                f"{first_error}\n--- YouTube public fallback ---\n{fallback_error}"
+            ) from fallback_error
+
+
 async def _download_mp3(
     url: str,
     *,
     work_dir: str,
     bitrate_kbps: int,
+    source: str,
 ) -> str:
     out_template = os.path.join(work_dir, "source.%(ext)s")
     return await asyncio.to_thread(
@@ -238,6 +322,7 @@ async def _download_mp3(
         url,
         out_template,
         bitrate_kbps,
+        source,
     )
 
 
@@ -330,6 +415,7 @@ async def download_music_files(
             url,
             work_dir=work_dir,
             bitrate_kbps=plan.bitrate_kbps,
+            source=metadata.source,
         )
         source_size = os.path.getsize(source_path)
 
