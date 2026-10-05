@@ -406,14 +406,19 @@ async def test_process_pending_message_routes_pinterest_to_music_bot_rejection(m
 
 
 @pytest.mark.asyncio
-async def test_process_pending_message_dispatches_threads(monkeypatch):
-    message = SimpleNamespace(text="https://www.threads.com/@demo/post/Abc_123", caption=None)
-    process_threads_url = AsyncMock()
-    monkeypatch.setattr(handlers.threads, "process_threads_url", process_threads_url)
+async def test_process_pending_message_dispatches_threads_to_music_bot(monkeypatch):
+    message = DummyMessage()
+    message.text = "https://www.threads.com/@demo/post/Abc_123"
+    process_music_link = AsyncMock()
+    monkeypatch.setattr(handlers.music, "process_music_link", process_music_link)
 
     await user._process_pending_message(message)
 
-    process_threads_url.assert_awaited_once_with(message, url="https://www.threads.com/@demo/post/Abc_123")
+    process_music_link.assert_awaited_once_with(
+        message,
+        service="threads",
+        url="https://www.threads.com/@demo/post/Abc_123",
+    )
 
 
 @pytest.mark.asyncio
