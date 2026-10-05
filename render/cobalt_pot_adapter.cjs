@@ -18,6 +18,25 @@ const EXTERNAL_PROVIDER_PROXY = String(
   process.env.POT_PROVIDER_PROXY || ""
 ).trim();
 
+const YOUTUBE_WORKER_API_KEY = String(
+  process.env.YOUTUBE_WORKER_API_KEY || ""
+).trim();
+const YOUTUBE_WORKER_YTDLP_BIN = String(
+  process.env.YOUTUBE_WORKER_YTDLP_BIN ||
+    path.join(process.cwd(), ".session-bin", "yt-dlp")
+).trim();
+const YOUTUBE_WORKER_PLUGIN_DIR = String(
+  process.env.YOUTUBE_WORKER_PLUGIN_DIR ||
+    path.join(process.cwd(), ".bgutil", "plugin")
+).trim();
+const YOUTUBE_WORKER_PROXY = String(
+  process.env.YOUTUBE_WORKER_PROXY || "socks5://127.0.0.1:1080"
+).trim();
+const YOUTUBE_WORKER_MAX_SOURCE_BYTES =
+  Number(process.env.YOUTUBE_WORKER_MAX_SOURCE_BYTES || "") ||
+  150 * 1024 * 1024;
+let youtubeWorkerTail = Promise.resolve();
+
 const WARP_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.COBALT_WARP_ENABLED || "")
 );
@@ -543,6 +562,228 @@ async function fetchSession() {
   throw new Error(lastError);
 }
 
+function readJsonBody(request, maxBytes = 2 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks = [];
+    request.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error("request body too large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolve(text ? JSON.parse(text) : {});
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+function workerAuthorized(request) {
+  if (!YOUTUBE_WORKER_API_KEY) return false;
+  const auth = String(request.headers.authorization || "");
+  const expected = `Bearer ${YOUTUBE_WORKER_API_KEY}`;
+  const left = Buffer.from(auth);
+  const right = Buffer.from(expected);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function isAllowedYoutubeUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    return (
+      parsed.protocol === "https:" &&
+      (host === "youtube.com" ||
+        host.endsWith(".youtube.com") ||
+        host === "youtu.be")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runYoutubeWorkerProcess(args, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(YOUTUBE_WORKER_YTDLP_BIN, args, {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    let stderr = "";
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error("YouTube worker timed out")));
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-12000);
+    });
+    child.once("error", (error) => {
+      finish(() => reject(error));
+    });
+    child.once("exit", (code, signal) => {
+      finish(() => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const detail = stderr.trim().slice(-1200);
+        reject(
+          new Error(
+            `yt-dlp worker failed code=${code} signal=${signal || ""}` +
+              (detail ? `: ${detail}` : "")
+          )
+        );
+      });
+    });
+  });
+}
+
+function findYoutubeWorkerOutput(prefix) {
+  const directory = path.dirname(prefix);
+  const stem = path.basename(prefix) + ".";
+  const matches = fs
+    .readdirSync(directory)
+    .filter((name) => name.startsWith(stem) && !name.endsWith(".part"))
+    .map((name) => path.join(directory, name))
+    .filter((name) => {
+      try {
+        return fs.statSync(name).isFile();
+      } catch {
+        return false;
+      }
+    });
+  if (!matches.length) {
+    throw new Error("YouTube worker produced no audio file");
+  }
+  matches.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size);
+  return matches[0];
+}
+
+async function runYoutubeWorkerAudio(videoUrl, cookiesText) {
+  if (!fs.existsSync(YOUTUBE_WORKER_YTDLP_BIN)) {
+    throw new Error("yt-dlp worker binary is missing");
+  }
+  if (!fs.existsSync(YOUTUBE_WORKER_PLUGIN_DIR)) {
+    throw new Error("bgutil yt-dlp plugin directory is missing");
+  }
+
+  const id = crypto.randomUUID();
+  const prefix = path.join(os.tmpdir(), `youtube-worker-${id}`);
+  const cookiePath = `${prefix}.cookies.txt`;
+  const outputTemplate = `${prefix}.%(ext)s`;
+  let outputPath = null;
+
+  try {
+    fs.writeFileSync(cookiePath, cookiesText, { mode: 0o600 });
+    const args = [
+      "--no-playlist",
+      "--no-cache-dir",
+      "--no-warnings",
+      "--quiet",
+      "--socket-timeout", "15",
+      "--retries", "1",
+      "--fragment-retries", "1",
+      "--max-filesize", "150M",
+      "--proxy", YOUTUBE_WORKER_PROXY,
+      "--cookies", cookiePath,
+      "--plugin-dirs", YOUTUBE_WORKER_PLUGIN_DIR,
+      "--js-runtimes", "node",
+      "--extractor-args",
+      "youtube:player_client=mweb,tv,web_safari;fetch_pot=always",
+      "--extractor-args",
+      "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+      "--format",
+      "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+      "--output", outputTemplate,
+      videoUrl,
+    ];
+
+    console.log("[YOUTUBE-WORKER] download start");
+    await runYoutubeWorkerProcess(args);
+    outputPath = findYoutubeWorkerOutput(prefix);
+    const stat = fs.statSync(outputPath);
+    if (stat.size <= 0) throw new Error("YouTube worker audio file is empty");
+    if (stat.size > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+      throw new Error("YouTube worker audio exceeded safety limit");
+    }
+    console.log(`[YOUTUBE-WORKER] download ready bytes=${stat.size}`);
+    return outputPath;
+  } catch (error) {
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      if (name.startsWith(`youtube-worker-${id}.`)) {
+        try { fs.rmSync(path.join(os.tmpdir(), name), { force: true }); } catch {}
+      }
+    }
+    throw error;
+  } finally {
+    try { fs.rmSync(cookiePath, { force: true }); } catch {}
+  }
+}
+
+function enqueueYoutubeWorker(task) {
+  const run = youtubeWorkerTail.then(task, task);
+  youtubeWorkerTail = run.catch(() => {});
+  return run;
+}
+
+function streamWorkerFile(response, filePath) {
+  const stat = fs.statSync(filePath);
+  const ext = path.extname(filePath).replace(/^\./, "") || "audio";
+  const contentTypes = {
+    m4a: "audio/mp4",
+    mp4: "audio/mp4",
+    webm: "audio/webm",
+    opus: "audio/ogg",
+    ogg: "audio/ogg",
+  };
+  response.writeHead(200, {
+    "content-type": contentTypes[ext] || "application/octet-stream",
+    "content-length": stat.size,
+    "content-disposition": `attachment; filename="source.${ext}"`,
+    "x-audio-ext": ext,
+    "cache-control": "no-store",
+  });
+
+  const stream = fs.createReadStream(filePath);
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { fs.rmSync(filePath, { force: true }); } catch {}
+  };
+  stream.once("error", (error) => {
+    console.error("[YOUTUBE-WORKER] stream error:", error?.message || error);
+    response.destroy(error);
+    cleanup();
+  });
+  response.once("close", cleanup);
+  response.once("finish", cleanup);
+  stream.pipe(response);
+}
+
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host || HOST}`);
 
@@ -553,6 +794,47 @@ const server = http.createServer(async (request, response) => {
       "content-length": Buffer.byteLength(payload),
     });
     response.end(payload);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/audio") {
+    if (!workerAuthorized(request)) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(request);
+      const videoUrl = String(body?.url || "").trim();
+      const cookiesText = String(body?.cookies || "");
+      if (!isAllowedYoutubeUrl(videoUrl)) {
+        throw new Error("invalid YouTube URL");
+      }
+      if (!cookiesText.trim()) {
+        throw new Error("YouTube cookies are required");
+      }
+
+      const filePath = await enqueueYoutubeWorker(() =>
+        runYoutubeWorkerAudio(videoUrl, cookiesText)
+      );
+      streamWorkerFile(response, filePath);
+    } catch (error) {
+      console.error(
+        "[YOUTUBE-WORKER] request failed:",
+        String(error?.message || error).slice(0, 1500)
+      );
+      if (!response.headersSent) {
+        const payload = JSON.stringify({
+          error: error?.message || "YouTube worker unavailable",
+        });
+        response.writeHead(502, {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        });
+        response.end(payload);
+      }
+    }
     return;
   }
 
