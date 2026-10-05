@@ -1,11 +1,13 @@
 name: Tests
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
       - master
+      - "music-bot-v2-*"
 
 permissions:
   contents: read

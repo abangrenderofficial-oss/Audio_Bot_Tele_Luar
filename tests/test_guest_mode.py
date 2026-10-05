@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -99,6 +98,7 @@ async def test_guest_message_missing_query_id_ignored(fake_deps):
     fake_deps.send_analytics.assert_not_awaited()
 
 
+
 @pytest.mark.asyncio
 async def test_guest_message_tiktok_link(fake_deps):
     msg = _build_guest_message("@TestDownloaderBot https://vm.tiktok.com/ZM123456/")
@@ -108,13 +108,13 @@ async def test_guest_message_tiktok_link(fake_deps):
         await guest.handle_guest_message(msg, deps=fake_deps)
 
     msg.answer_guest_query.assert_awaited_once()
-    call_args = msg.answer_guest_query.await_args
-    result = call_args.kwargs["result"]
+    result = msg.answer_guest_query.await_args.kwargs["result"]
     assert isinstance(result, InlineQueryResultArticle)
     assert "Tiktok" in result.title or "TikTok" in result.title
-    assert "guest_tiktok_" in result.id
+    assert "MP3" in result.title
+    assert "?start=dl_" in result.reply_markup.inline_keyboard[0][0].url
+    mock_sender.assert_not_awaited()
 
-    # Check analytics
     fake_deps.send_analytics.assert_any_await(
         user_id=42,
         chat_type=ChatType.SUPERGROUP,
@@ -125,14 +125,6 @@ async def test_guest_message_tiktok_link(fake_deps):
         chat_type=ChatType.SUPERGROUP,
         action_name="guest_tiktok_download",
     )
-
-    # Let event loop run background tasks
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
-    sender_kwargs = mock_sender.await_args.kwargs
-    assert sender_kwargs["inline_message_id"] == "inline_msg_abc123"
-    assert sender_kwargs["actor_user_id"] == 42
-    assert sender_kwargs["duplicate_handler"] == "guest"
 
 
 @pytest.mark.asyncio
@@ -149,11 +141,9 @@ async def test_guest_message_instagram_link(fake_deps):
     result = msg.answer_guest_query.await_args.kwargs["result"]
     assert isinstance(result, InlineQueryResultArticle)
     assert "Instagram" in result.title
-
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
-    assert mock_sender.await_args.kwargs["inline_message_id"] == "inline_msg_abc123"
-
+    assert "MP3" in result.title
+    assert "?start=dl_" in result.reply_markup.inline_keyboard[0][0].url
+    mock_sender.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_guest_message_youtube_link(fake_deps):
@@ -214,7 +204,7 @@ async def test_guest_message_threads_link(fake_deps):
 
 
 @pytest.mark.asyncio
-async def test_guest_message_pinterest_link(fake_deps):
+async def test_guest_message_pinterest_link_is_rejected_for_music_bot(fake_deps):
     msg = _build_guest_message("@TestDownloaderBot https://pin.it/12345")
     mock_sender = AsyncMock()
 
@@ -225,6 +215,8 @@ async def test_guest_message_pinterest_link(fake_deps):
     result = msg.answer_guest_query.await_args.kwargs["result"]
     assert isinstance(result, InlineQueryResultArticle)
     assert "Pinterest" in result.title
+    assert "belum disokong" in result.title
+    mock_sender.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -251,6 +243,7 @@ async def test_guest_message_help_on_mention_without_link(fake_deps):
     assert "Guest Mode" in result.title or "MaxLoad" in result.title
 
 
+
 @pytest.mark.asyncio
 async def test_guest_message_reply_to_tiktok_link(fake_deps):
     replied_msg = Mock(spec=Message)
@@ -268,13 +261,9 @@ async def test_guest_message_reply_to_tiktok_link(fake_deps):
 
     msg.answer_guest_query.assert_awaited_once()
     result = msg.answer_guest_query.await_args.kwargs["result"]
-    assert isinstance(result, InlineQueryResultArticle)
-    assert "Tiktok" in result.title or "TikTok" in result.title
-    assert "guest_tiktok_" in result.id
-
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
-    assert mock_sender.await_args.kwargs["inline_message_id"] == "inline_msg_abc123"
+    assert "MP3" in result.title
+    assert "?start=dl_" in result.reply_markup.inline_keyboard[0][0].url
+    mock_sender.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -296,11 +285,9 @@ async def test_guest_message_reply_caption_instagram_link(fake_deps):
 
     msg.answer_guest_query.assert_awaited_once()
     result = msg.answer_guest_query.await_args.kwargs["result"]
-    assert isinstance(result, InlineQueryResultArticle)
     assert "Instagram" in result.title
-
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
+    assert "MP3" in result.title
+    mock_sender.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -314,11 +301,9 @@ async def test_guest_message_quote_link(fake_deps):
 
     msg.answer_guest_query.assert_awaited_once()
     result = msg.answer_guest_query.await_args.kwargs["result"]
-    assert isinstance(result, InlineQueryResultArticle)
     assert "Youtube" in result.title or "YouTube" in result.title
-
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
+    assert "MP3" in result.title
+    mock_sender.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -341,12 +326,9 @@ async def test_guest_message_reply_text_link_entity(fake_deps):
 
     msg.answer_guest_query.assert_awaited_once()
     result = msg.answer_guest_query.await_args.kwargs["result"]
-    assert isinstance(result, InlineQueryResultArticle)
     assert "Twitter" in result.title
-
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
-
+    assert "MP3" in result.title
+    mock_sender.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_guest_message_direct_link_overrides_reply_link(fake_deps):
@@ -374,19 +356,19 @@ async def test_guest_message_direct_link_overrides_reply_link(fake_deps):
     assert "Tiktok" in result.title or "TikTok" in result.title
 
 
+
 @pytest.mark.asyncio
-async def test_guest_sender_error_handled_gracefully(fake_deps):
+async def test_guest_music_redirect_does_not_call_legacy_sender(fake_deps):
     msg = _build_guest_message("@TestDownloaderBot https://vm.tiktok.com/ZM123456/")
-    mock_sender = AsyncMock(side_effect=RuntimeError("Simulated download failure"))
+    mock_sender = AsyncMock(side_effect=RuntimeError("legacy video sender must not run"))
 
     with patch("handlers.guest._get_service_sender", return_value=mock_sender):
         await guest.handle_guest_message(msg, deps=fake_deps)
 
     msg.answer_guest_query.assert_awaited_once()
-    await asyncio.sleep(0.01)
-    mock_sender.assert_awaited_once()
-
-
+    result = msg.answer_guest_query.await_args.kwargs["result"]
+    assert "MP3" in result.title
+    mock_sender.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_guest_message_help_command(fake_deps):
@@ -596,6 +578,7 @@ async def test_guest_message_spotify_deeplink_stores_request_and_processes(fake_
         mock_proc.assert_awaited_once_with(dm_msg, "spotify", stored.url)
 
 
+
 @pytest.mark.asyncio
 async def test_guest_mode_prioritizes_caller_user_over_bot_from_user(fake_deps):
     bot_user = User(id=999, is_bot=True, first_name="Bot", username="my_bot")
@@ -605,7 +588,6 @@ async def test_guest_mode_prioritizes_caller_user_over_bot_from_user(fake_deps):
         "@TestDownloaderBot https://vm.tiktok.com/ZM123456/",
         user_id=777,
     )
-    # Simulate Telegram update where from_user is bot, but caller is human
     msg.from_user = bot_user
     msg.guest_bot_caller_user = human_caller
 
@@ -618,9 +600,9 @@ async def test_guest_mode_prioritizes_caller_user_over_bot_from_user(fake_deps):
         chat_type=ChatType.SUPERGROUP,
         action_name="guest_query",
     )
-    await asyncio.sleep(0.01)
-    assert mock_sender.await_args.kwargs["actor_user_id"] == 777
-
+    result = msg.answer_guest_query.await_args.kwargs["result"]
+    assert "MP3" in result.title
+    mock_sender.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_send_welcome_handles_settings_and_stats_start_payloads():

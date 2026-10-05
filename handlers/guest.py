@@ -31,6 +31,10 @@ _guest_tasks: set[asyncio.Task[None]] = set()
 
 router = Router(name=__name__)
 
+MUSIC_GUEST_REDIRECT_SERVICES = frozenset(
+    {"youtube", "tiktok", "instagram", "threads", "twitter"}
+)
+
 
 def _get_service_sender(service: str):
     if service == "tiktok":
@@ -344,8 +348,8 @@ async def handle_guest_message(
         # Summoned directly without a supported link (e.g. @bot, @bot /help, @bot hello)
         article = InlineQueryResultArticle(
             id=f"guest_help_{uuid.uuid4().hex[:8]}",
-            title="MaxLoad — Guest Mode",
-            description="Summon me with a media link to download videos/audio directly here!",
+            title="MP3 Music Bot — Guest Mode",
+            description="Mention bot dengan link music untuk convert audio ke MP3.",
             thumbnail_url=get_inline_service_icon("tiktok"),
             input_message_content=InputTextMessageContent(
                 message_text=bm.guest_help_message(bot_username),
@@ -357,6 +361,20 @@ async def handle_guest_message(
         return
 
     service, url = detected
+    if service == "pinterest":
+        article = InlineQueryResultArticle(
+            id=f"guest_unsupported_{service}_{uuid.uuid4().hex[:8]}",
+            title="Pinterest belum disokong untuk MP3",
+            description="MP3 Music Bot fokus pada sumber audio yang disokong.",
+            thumbnail_url=get_inline_service_icon(service),
+            input_message_content=InputTextMessageContent(
+                message_text=bm.music_unsupported_link(),
+                parse_mode="HTML",
+            ),
+        )
+        await message.answer_guest_query(result=article)
+        return
+
     logging.download_request(
         user_id=user_id,
         username=getattr(user, "username", None),
@@ -371,19 +389,24 @@ async def handle_guest_message(
         action_name=f"guest_{service}_download",
     )
 
-    sender_func = _get_service_sender(service)
+    sender_func = (
+        None
+        if service in MUSIC_GUEST_REDIRECT_SERVICES
+        else _get_service_sender(service)
+    )
     if sender_func is None:
-        # Platform does not have an inline/guest sender (e.g. spotify)
+        # Music-first services are completed in private chat so guest/inline
+        # mode cannot fall through to the legacy video delivery path.
         from services.inline.album_links import create_inline_album_request
 
         token = create_inline_album_request(user_id, service, url)
         article = InlineQueryResultArticle(
             id=f"guest_{service}_{token}",
-            title=f"{service.capitalize()} Link",
-            description=f"Open in bot to download {service.capitalize()} media.",
+            title=f"{service.capitalize()} MP3",
+            description=f"Open MP3 Music Bot to convert this {service.capitalize()} link.",
             thumbnail_url=get_inline_service_icon(service),
             input_message_content=InputTextMessageContent(
-                message_text=f"🎵 <b>{service.capitalize()} Media</b>\n\nTap below to open in private chat with the bot and download.",
+                message_text=f"🎵 <b>{service.capitalize()} → MP3</b>\n\nTap below to open the Music Bot and convert this link.",
                 parse_mode="HTML",
             ),
             reply_markup=types.InlineKeyboardMarkup(

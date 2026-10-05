@@ -89,19 +89,9 @@ async def _process_supported_link(message: types.Message, service: str, url: str
         chat_type=getattr(getattr(message, "chat", None), "type", None),
     )
 
-    if service == "tiktok":
-        from handlers import tiktok
-        await tiktok.process_tiktok(message, direct_url=url)
-        return
-
-    if service == "instagram":
-        from handlers import instagram
-        await instagram.process_instagram_url(message, url=url)
-        return
-
-    if service == "threads":
-        from handlers import threads
-        await threads.process_threads_url(message, url=url)
+    if service in {"youtube", "tiktok", "instagram", "threads", "twitter", "pinterest"}:
+        from handlers import music
+        await music.process_music_link(message, service=service, url=url)
         return
 
     if service == "soundcloud":
@@ -113,23 +103,6 @@ async def _process_supported_link(message: types.Message, service: str, url: str
         from handlers import spotify
         await spotify.process_spotify_url(message, url=url)
         return
-
-    if service == "pinterest":
-        from handlers import pinterest
-        await pinterest.process_pinterest_url(message, url=url)
-        return
-
-    if service == "youtube":
-        from handlers import youtube
-        if "music.youtube." in url.lower():
-            await youtube.download_music(message, direct_url=url)
-        else:
-            await youtube.download_video(message, direct_url=url)
-        return
-
-    if service == "twitter":
-        from handlers import twitter
-        await twitter.handle_tweet_links(message, direct_url=url)
 
 
 def _has_multiple_supported_links(message: types.Message) -> bool:

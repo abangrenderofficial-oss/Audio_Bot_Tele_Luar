@@ -40,6 +40,7 @@ def test_captions_supports_larger_limits_for_plain_messages():
         (bm.settings_admin_only, "group admins"),
         (bm.video_too_large, "too large"),
         (bm.audio_too_large, "too large"),
+        (bm.music_unsupported_link, "Pinterest"),
         (bm.nothing_found, "No media found"),
         (bm.keyboard_removed, "removed"),
         (bm.tiktok_live_not_supported, "LIVE"),

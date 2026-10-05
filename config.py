@@ -208,9 +208,7 @@ BATCH_LINKS_PARALLEL_ACTIVE_JOBS_THRESHOLD = (
 MAX_FILE_SIZE = _read_int_env("MAX_FILE_SIZE") or int(1.5 * 1024 * 1024 * 1024)
 
 BOT_COMMANDS = [
-    {"command": "start", "description": "Get started"},
-    {"command": "help", "description": "Supported sites and tips"},
-    {"command": "settings", "description": "Settings"},
-    {"command": "stats", "description": "Statistics"},
+    {"command": "start", "description": "Start MP3 Music Bot"},
+    {"command": "help", "description": "Supported music links and tips"},
 ]
 ADMINS_UID = [ADMIN_ID]

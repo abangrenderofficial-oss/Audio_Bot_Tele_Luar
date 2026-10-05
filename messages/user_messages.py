@@ -4,18 +4,18 @@ def cancel():
 
 def welcome_message():
     return (
-        '<b>Welcome to MaxLoad <tg-emoji emoji-id="5420141555233071341">❤️</tg-emoji></b>\n\n'
-        "Send one link, or paste several links in one message, and I'll download what I can.\n\n"
-        "<b>Supported sites</b>\n"
-        '<tg-emoji emoji-id="5233671414023753035">📷</tg-emoji> Instagram\n'
-        '<tg-emoji emoji-id="5370693953236539466">🧵</tg-emoji> Threads\n'
-        '<tg-emoji emoji-id="5233597424622144804">🎵</tg-emoji> TikTok\n'
-        '<tg-emoji emoji-id="5233311027612913110">▶️</tg-emoji> YouTube\n'
-        '<tg-emoji emoji-id="5231309843435919433">🐦</tg-emoji> X / Twitter\n'
-        '<tg-emoji emoji-id="5233448977667492819">🎧</tg-emoji> SoundCloud\n'
-        '<tg-emoji emoji-id="5391001065418172193">🟢</tg-emoji> Spotify\n'
-        '<tg-emoji emoji-id="5233210422298974231">📌</tg-emoji> Pinterest\n\n'
-        "Use the buttons below to try inline mode, tune settings, or share the bot."
+        "<b>🎵 MP3 Music Bot</b>\n\n"
+        "Hantar satu link public daripada:\n"
+        "• YouTube / Shorts\n"
+        "• TikTok\n"
+        "• Instagram Reels\n"
+        "• Threads\n"
+        "• X / Twitter\n"
+        "• SoundCloud\n"
+        "• Spotify\n\n"
+        "Bot akan ambil audio dan hantar sebagai MP3.\n"
+        "Quality dipilih secara adaptive: <b>320 / 256 / 224 / 192 / 160 / 128 kbps</b>.\n"
+        "Kalau satu fail perlukan quality bawah 128 kbps, bot kekalkan <b>128 kbps</b> dan split automatik."
     )
 
 
@@ -96,7 +96,7 @@ def captions(user_captions, post_caption, bot_url, *, limit: int = 1024):
             cut = cut[:amp]
         return cut
 
-    footer = '<tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji> Powered by <a href="{bot_url}">MaxLoad</a>'.format(
+    footer = '<tg-emoji emoji-id="5283080528818360566">🎵</tg-emoji> Powered by <a href="{bot_url}">MP3 Music Bot</a>'.format(
         bot_url=bot_url
     )
 
@@ -287,43 +287,33 @@ def category_settings_text(category: str) -> str:
 
 
 def help_message(bot_username: str | None = None) -> str:
-    username = bot_username or "MaxLoadBot"
+    del bot_username
     return (
-        "<b>📖 MaxLoad Help & Guide</b>\n\n"
-        "Send one link or paste multiple links in one message. The bot will automatically extract and deliver the media.\n\n"
-        "<blockquote expandable><b>📷 Instagram & Threads</b>\n"
-        "• Download Posts, Reels, IGTV & Stories\n"
-        "• Photo carousels & multi-media albums\n"
-        "• Copy link via Share → Copy link</blockquote>\n\n"
-        "<blockquote expandable><b>🎵 TikTok</b>\n"
-        "• Watermark-free video downloads\n"
-        "• Photo carousels & slideshows\n"
-        "• MP3 audio extraction supported</blockquote>\n\n"
-        "<blockquote expandable><b>▶️ YouTube & YouTube Music</b>\n"
-        "• YouTube Shorts & regular Videos\n"
-        "• High quality audio & video streams\n"
-        "• Tap MP3 button to download audio</blockquote>\n\n"
-        "<blockquote expandable><b>🐦 X / Twitter & 📌 Pinterest</b>\n"
-        "• X / Twitter videos, GIFs & images\n"
-        "• Pinterest video and image Pins</blockquote>\n\n"
-        "<blockquote expandable><b>🎧 SoundCloud & 🟢 Spotify</b>\n"
-        "• High quality SoundCloud audio tracks\n"
-        "• Spotify track matching & audio download</blockquote>\n\n"
-        f"<blockquote expandable><b>⚡ Inline Mode</b>\n"
-        f"• Type <code>@{username} [link]</code> in any chat\n"
-        "• Instant preview and direct media sharing</blockquote>\n\n"
-        "<blockquote expandable><b>📦 Batch Downloading</b>\n"
-        "• Paste up to 6 links in a single message\n"
-        "• Delivered one by one to keep chat clean</blockquote>"
+        "<b>🎵 MP3 Music Bot — Help</b>\n\n"
+        "Paste satu link public dan bot akan cuba ambil audio terus sebagai MP3.\n\n"
+        "<b>Supported</b>\n"
+        "• YouTube / Shorts\n"
+        "• TikTok\n"
+        "• Instagram Reels\n"
+        "• Threads\n"
+        "• X / Twitter\n"
+        "• SoundCloud\n"
+        "• Spotify\n\n"
+        "<b>Audio quality</b>\n"
+        "Bot pilih bitrate tertinggi yang sesuai daripada 320, 256, 224, 192, 160 atau 128 kbps. "
+        "Jika audio terlalu panjang untuk satu fail pada 128 kbps, bot split kepada beberapa MP3 tanpa turunkan quality lagi.\n\n"
+        "<b>Nama audio sosial</b>\n"
+        "Untuk TikTok, Reels, Threads dan X, bot cuba guna nama sound sebenar. "
+        "Jika nama sound tak tersedia, fallback ialah <code>Original sound — @username</code>."
     )
 
 
 def referral_message(bot_username: str, user_id: int, invited_count: int) -> str:
-    username = bot_username or "MaxLoadBot"
+    username = bot_username or "MusicBot"
     ref_link = f"https://t.me/{username}?start=ref_{user_id}"
     return (
-        "<b>👥 Your Referral Program</b>\n\n"
-        "Invite friends to use MaxLoad! Share your personal referral link:\n"
+        "<b>👥 Referral MP3 Music Bot</b>\n\n"
+        "Kongsi link peribadi ini untuk jemput kawan guna bot:\n"
         f"<code>{ref_link}</code>\n\n"
         f"Users invited: <b>{invited_count}</b>"
     )
@@ -368,21 +358,30 @@ def audio_too_large():
     return "The audio is too large for Telegram. Try a shorter track or another source link."
 
 
+def music_unsupported_link():
+    return (
+        "<b>🎵 MP3 Music Bot</b>\n\n"
+        "Link Pinterest belum disokong untuk conversion MP3.\n"
+        "Gunakan link public daripada YouTube, TikTok, Instagram Reels, Threads, X / Twitter, SoundCloud atau Spotify."
+    )
+
+
 def nothing_found():
     return "No media found. Check that the link is public, not expired, and points directly to a post or video."
 
 
 def guest_help_message(bot_username: str) -> str:
     return (
-        "👋 <b>MaxLoad — Guest Mode</b>\n\n"
-        "You summoned the bot in this chat! To download media, mention me with a link from any supported platform:\n\n"
-        "• <b>TikTok</b> (videos, photos)\n"
-        "• <b>Instagram & Threads</b> (reels, photos)\n"
-        "• <b>YouTube</b> (videos, music)\n"
-        "• <b>Twitter / X</b> (videos, gifs)\n"
-        "• <b>SoundCloud & Spotify</b> (music)\n"
-        "• <b>Pinterest</b> (pins, videos)\n\n"
-        "<i>💡 Tip: Add me to this group or open a direct chat with @{bot_username} for full features and settings!</i>"
+        "🎵 <b>MP3 Music Bot — Guest Mode</b>\n\n"
+        "Mention bot bersama satu link public untuk tukar audio kepada MP3:\n\n"
+        "• <b>YouTube / Shorts</b>\n"
+        "• <b>TikTok</b>\n"
+        "• <b>Instagram Reels</b>\n"
+        "• <b>Threads</b>\n"
+        "• <b>X / Twitter</b>\n"
+        "• <b>SoundCloud</b>\n"
+        "• <b>Spotify</b>\n\n"
+        "<i>Untuk conversion penuh, buka private chat dengan @{bot_username}.</i>"
     ).format(bot_username=bot_username)
 
 
@@ -395,6 +394,6 @@ def guest_downloading_status(service_name: str) -> str:
 
 def guest_unsupported_link() -> str:
     return (
-        "Sorry, no supported media link was found in your mention. "
-        "Please include a link from TikTok, Instagram, YouTube, X, SoundCloud, Spotify, or Pinterest."
+        "Tiada link music yang disokong dijumpai. "
+        "Gunakan YouTube, TikTok, Instagram Reels, Threads, X / Twitter, SoundCloud atau Spotify."
     )
