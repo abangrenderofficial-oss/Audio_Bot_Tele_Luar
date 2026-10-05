@@ -14,7 +14,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/mak5er/downloader-bot
+  IMAGE_NAME: ghcr.io/abangrenderofficial-oss/audio-bot-tele-luar
 
 jobs:
   docker:
