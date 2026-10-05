@@ -1339,7 +1339,9 @@ def _youtube_worker_cookie_text() -> str:
                 return value
         except OSError:
             continue
-    raise MusicDownloadError("YouTube worker cookies are unavailable")
+    # External workers can often use a guest Innertube session. Cookies are
+    # optional and are only forwarded when a persisted YouTube session exists.
+    return ""
 
 
 def _run_youtube_worker_mp3_sync(
@@ -1359,7 +1361,7 @@ def _run_youtube_worker_mp3_sync(
     total = 0
 
     try:
-        logging.info("Trying isolated WARP YouTube audio worker")
+        logging.info("Trying external YouTube audio worker")
         with httpx.Client(
             timeout=httpx.Timeout(150.0, connect=20.0),
             follow_redirects=True,
