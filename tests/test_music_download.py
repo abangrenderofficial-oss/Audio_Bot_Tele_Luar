@@ -396,3 +396,27 @@ def test_low_memory_metadata_prefers_invidious_before_piped(monkeypatch):
         "https://youtu.be/Ftffph3fVEs",
         "youtube",
     ) == expected
+
+
+def test_pick_invidious_audio_stream_prefers_m4a_over_higher_bitrate_webm():
+    data = {
+        "adaptiveFormats": [
+            {
+                "url": "https://cdn.example/audio-webm",
+                "type": "audio/webm; codecs=\"opus\"",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 192_000,
+            },
+            {
+                "url": "https://cdn.example/audio-m4a",
+                "type": "audio/mp4; codecs=\"mp4a.40.2\"",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 128_000,
+            },
+        ]
+    }
+
+    stream = music_download._pick_invidious_audio_stream(data)
+
+    assert stream is not None
+    assert stream["url"] == "https://cdn.example/audio-m4a"
