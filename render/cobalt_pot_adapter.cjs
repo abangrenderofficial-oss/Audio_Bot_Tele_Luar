@@ -903,6 +903,222 @@ function socialSourceLabel(source) {
   }[String(source || "").toLowerCase()] || "Social";
 }
 
+function instagramShortcode(mediaUrl) {
+  try {
+    const parsed = new URL(mediaUrl);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const idx = parts.findIndex((part) =>
+      ["reel", "reels", "p", "tv"].includes(part)
+    );
+    return idx >= 0 && parts[idx + 1] ? parts[idx + 1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function findInstagramMediaNode(root, shortcode) {
+  const stack = [root];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (Array.isArray(cur)) {
+      for (const item of cur) stack.push(item);
+      continue;
+    }
+    if (!cur || typeof cur !== "object") continue;
+
+    const code = cur.code || cur.shortcode || "";
+    if (
+      (!shortcode || code === shortcode) &&
+      (
+        cur.clips_metadata ||
+        cur.music_metadata ||
+        cur.clips_music_attribution_info
+      )
+    ) {
+      return cur;
+    }
+    for (const value of Object.values(cur)) stack.push(value);
+  }
+  return null;
+}
+
+function instagramMusicFromNode(media) {
+  if (!media || typeof media !== "object") return null;
+
+  const containers = [
+    media.clips_metadata,
+    media.music_metadata,
+  ].filter((value) => value && typeof value === "object");
+
+  for (const container of containers) {
+    const info = container.music_info;
+    const asset =
+      info && typeof info === "object"
+        ? (
+            info.music_asset_info &&
+            typeof info.music_asset_info === "object"
+              ? info.music_asset_info
+              : info
+          )
+        : null;
+
+    if (asset) {
+      const title = String(
+        asset.title ||
+        asset.song_name ||
+        ""
+      ).trim();
+      const artist = String(
+        asset.display_artist ||
+        asset.artist_name ||
+        asset.subtitle ||
+        ""
+      ).trim();
+
+      if (title && !/^original (audio|sound)$/i.test(title)) {
+        return {
+          title,
+          performer: artist || "Instagram",
+          source: "music_asset_info",
+        };
+      }
+    }
+  }
+
+  const attribution =
+    (
+      media.clips_music_attribution_info &&
+      typeof media.clips_music_attribution_info === "object"
+    )
+      ? media.clips_music_attribution_info
+      : null;
+
+  if (attribution) {
+    const title = String(
+      attribution.song_name ||
+      attribution.title ||
+      ""
+    ).trim();
+    const artist = String(
+      attribution.artist_name ||
+      attribution.artist ||
+      ""
+    ).trim();
+
+    if (title && !/^original (audio|sound)$/i.test(title)) {
+      return {
+        title,
+        performer: artist || "Instagram",
+        source: "clips_music_attribution_info",
+      };
+    }
+  }
+
+  for (const container of containers) {
+    const original =
+      container.original_sound_info &&
+      typeof container.original_sound_info === "object"
+        ? container.original_sound_info
+        : null;
+    if (!original) continue;
+
+    const title = String(
+      original.original_audio_title ||
+      original.audio_title ||
+      original.title ||
+      ""
+    ).trim();
+
+    let performer = "";
+    if (
+      original.ig_artist &&
+      typeof original.ig_artist === "object"
+    ) {
+      performer = String(
+        original.ig_artist.username ||
+        original.ig_artist.name ||
+        ""
+      ).trim();
+    }
+    performer = performer || String(
+      original.artist_name ||
+      original.artist ||
+      ""
+    ).trim();
+
+    if (title && !/^original (audio|sound)$/i.test(title)) {
+      return {
+        title,
+        performer: performer ? `@${performer.replace(/^@+/, "")}` : "Instagram",
+        source: "original_sound_info",
+      };
+    }
+  }
+
+  return null;
+}
+
+async function fetchInstagramSoundMetadata(mediaUrl) {
+  const shortcode = instagramShortcode(mediaUrl);
+  if (!shortcode) return null;
+
+  const cleanUrl = `https://www.instagram.com/reel/${shortcode}/`;
+  try {
+    const response = await fetch(cleanUrl, {
+      redirect: "follow",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
+          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 " +
+          "Mobile/15E148 Safari/604.1",
+        "accept-language": "en-US,en;q=0.9",
+        accept: "text/html,application/xhtml+xml",
+      },
+    });
+    if (!response.ok) {
+      console.warn(
+        `[SOCIAL-WORKER] instagram metadata page HTTP ${response.status}`
+      );
+      return null;
+    }
+
+    const html = await response.text();
+    const scriptRe =
+      /<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let match;
+    while ((match = scriptRe.exec(html)) !== null) {
+      const raw = match[1];
+      if (!raw.includes(shortcode)) continue;
+      if (
+        !raw.includes("clips_metadata") &&
+        !raw.includes("music_metadata") &&
+        !raw.includes("clips_music_attribution_info")
+      ) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        const node = findInstagramMediaNode(parsed, shortcode);
+        const music = instagramMusicFromNode(node);
+        if (music) {
+          console.log(
+            `[SOCIAL-WORKER] instagram sound metadata source=${music.source} title=${music.title} performer=${music.performer}`
+          );
+          return music;
+        }
+      } catch {}
+    }
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] instagram sound metadata failed:",
+      String(error?.message || error).slice(0, 700)
+    );
+  }
+
+  return null;
+}
+
 function socialReadMeta(filePath, fallback = "") {
   try {
     const value = fs.readFileSync(filePath, "utf8").trim();
@@ -1111,10 +1327,24 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     const uploaderId = socialReadMeta(uploaderIdPath, "")
       .replace(/^@+/, "");
     const rawTitle = socialReadMeta(titlePath, "");
-    const title = track || (
-      uploaderId
-        ? `Original sound — @${uploaderId}`
-        : rawTitle || `Original sound — ${uploader}`
+
+    let resolvedSound = null;
+    if (source === "instagram") {
+      resolvedSound = await fetchInstagramSoundMetadata(mediaUrl);
+    }
+
+    const title = (
+      resolvedSound?.title ||
+      track ||
+      (
+        uploaderId
+          ? `Original sound — @${uploaderId}`
+          : rawTitle || `Original sound — ${uploader}`
+      )
+    );
+    const performer = (
+      resolvedSound?.performer ||
+      (uploaderId ? `@${uploaderId}` : uploader)
     );
     const rawDuration = socialReadMeta(durationPath, "");
     const duration = Number(rawDuration);
@@ -1128,7 +1358,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       filePath: preparedPath,
       metadata: {
         title,
-        performer: uploaderId ? `@${uploaderId}` : uploader,
+        performer,
         duration:
           Number.isFinite(duration) && duration > 0 ? duration : null,
       },
