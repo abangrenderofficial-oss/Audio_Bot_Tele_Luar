@@ -539,3 +539,43 @@ async def test_youtube_download_preserves_direct_error_when_cobalt_not_configure
             bitrate_kbps=192,
             source="youtube",
         )
+
+
+
+@pytest.mark.asyncio
+async def test_cobalt_youtube_requests_session_token_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
+    monkeypatch.setenv("COBALT_API_KEY", "secret")
+    captured = {}
+
+    async def fake_fetch(base_url, api_key, payload, **kwargs):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["payload"] = payload
+        captured["kwargs"] = kwargs
+        return {"status": "tunnel", "url": "https://media.example/audio"}
+
+    class Parsed:
+        items = [("https://media.example/audio", None)]
+
+    monkeypatch.setattr(music_download, "fetch_cobalt_data", fake_fetch)
+    monkeypatch.setattr(
+        music_download,
+        "parse_cobalt_media_response",
+        lambda *_args, **_kwargs: Parsed(),
+    )
+    monkeypatch.setattr(
+        music_download,
+        "_convert_cobalt_audio_source_sync",
+        lambda *_args, **_kwargs: str(tmp_path / "source.mp3"),
+    )
+
+    result = await music_download._run_cobalt_mp3(
+        "https://youtu.be/Ftffph3fVEs",
+        str(tmp_path / "source.%(ext)s"),
+        192,
+    )
+
+    assert result == str(tmp_path / "source.mp3")
+    assert captured["payload"]["downloadMode"] == "audio"
+    assert captured["payload"]["videoQuality"] == "max"
