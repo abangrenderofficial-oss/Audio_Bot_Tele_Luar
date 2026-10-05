@@ -205,7 +205,7 @@ async def test_guest_message_threads_link(fake_deps):
 
 
 @pytest.mark.asyncio
-async def test_guest_message_pinterest_link(fake_deps):
+async def test_guest_message_pinterest_link_is_rejected_for_music_bot(fake_deps):
     msg = _build_guest_message("@TestDownloaderBot https://pin.it/12345")
     mock_sender = AsyncMock()
 
@@ -216,6 +216,8 @@ async def test_guest_message_pinterest_link(fake_deps):
     result = msg.answer_guest_query.await_args.kwargs["result"]
     assert isinstance(result, InlineQueryResultArticle)
     assert "Pinterest" in result.title
+    assert "belum disokong" in result.title
+    mock_sender.assert_not_awaited()
 
 
 @pytest.mark.asyncio
