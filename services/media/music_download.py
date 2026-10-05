@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from yt_dlp import YoutubeDL
@@ -28,6 +28,7 @@ SPLIT_BITRATE_KBPS = 128
 SEGMENT_SECONDS = 2400
 MUSIC_AUDIO_CACHE_VARIANT = "music_adaptive_mp3_v1"
 PIPED_MAX_SOURCE_BYTES = 150 * 1024 * 1024
+INVIDIOUS_MAX_SOURCE_BYTES = 150 * 1024 * 1024
 YOUTUBE_PUBLIC_FALLBACK_PROFILES: tuple[tuple[str, str], ...] = (
     ("android_vr", "18/bestaudio/best"),
     ("web_embedded", "bestaudio/best"),
@@ -224,11 +225,23 @@ def _extract_info_once(url: str, *, youtube_client: str | None = None) -> dict[s
 
 def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
     low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
+    invidious_metadata_error: Exception | None = None
     piped_metadata_error: Exception | None = None
+
+    if low_memory_mode and _configured_invidious_api_urls():
+        try:
+            logging.info("YouTube low-memory mode: trying Invidious metadata first")
+            return _extract_invidious_info_sync(url)
+        except Exception as exc:
+            invidious_metadata_error = exc
+            logging.warning(
+                "Invidious metadata failed; continuing low-memory fallbacks: error=%s",
+                exc,
+            )
 
     if low_memory_mode and _configured_piped_api_urls():
         try:
-            logging.info("YouTube low-memory mode: trying Piped metadata first")
+            logging.info("YouTube low-memory mode: trying Piped metadata")
             return _extract_piped_info_sync(url)
         except Exception as exc:
             piped_metadata_error = exc
@@ -246,6 +259,8 @@ def _extract_info_sync(url: str, source: str) -> dict[str, Any]:
             raise MusicDownloadError(str(first_error)) from first_error
 
         errors: list[str] = []
+        if invidious_metadata_error is not None:
+            errors.append(f"invidious-metadata: {invidious_metadata_error}")
         if piped_metadata_error is not None:
             errors.append(f"piped-metadata: {piped_metadata_error}")
         errors.append(f"primary: {first_error}")
@@ -349,6 +364,17 @@ def _configured_piped_api_urls() -> list[str]:
     ]
 
 
+def _configured_invidious_api_urls() -> list[str]:
+    raw = (os.getenv("INVIDIOUS_API_URLS") or "").strip()
+    if not raw:
+        return []
+    return [
+        item.strip().rstrip("/")
+        for item in re.split(r"[,;\s]+", raw)
+        if item.strip()
+    ]
+
+
 def _env_truthy(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -403,6 +429,218 @@ def _extract_piped_info_sync(url: str) -> dict[str, Any]:
     raise MusicDownloadError(
         "Piped YouTube metadata failed\n" + "\n".join(errors)
     )
+
+
+def _fetch_invidious_video_sync(url: str) -> tuple[dict[str, Any], str]:
+    api_urls = _configured_invidious_api_urls()
+    if not api_urls:
+        raise MusicDownloadError("Invidious fallback is not configured")
+
+    video_id = _youtube_video_id(url)
+    if not video_id:
+        raise MusicDownloadError("Unable to extract YouTube video id for Invidious")
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "AbangRender-MusicBot/1.0",
+    }
+    errors: list[str] = []
+    with httpx.Client(
+        timeout=httpx.Timeout(20.0, connect=8.0),
+        follow_redirects=True,
+    ) as client:
+        for api_url in api_urls:
+            try:
+                logging.info("Trying Invidious YouTube API: instance=%s", api_url)
+                response = client.get(
+                    f"{api_url}/api/v1/videos/{video_id}",
+                    params={"local": "true"},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict) or not data.get("title"):
+                    raise MusicDownloadError("Invidious returned incomplete video data")
+                return data, api_url
+            except Exception as exc:
+                errors.append(f"{api_url}: {exc}")
+                logging.warning(
+                    "Invidious YouTube API failed: instance=%s error=%s",
+                    api_url,
+                    exc,
+                )
+
+    raise MusicDownloadError(
+        "Invidious YouTube API failed\n" + "\n".join(errors)
+    )
+
+
+def _invidious_thumbnail_url(data: dict[str, Any]) -> str | None:
+    thumbnails = data.get("videoThumbnails")
+    if not isinstance(thumbnails, list):
+        return None
+    candidates = [
+        item
+        for item in thumbnails
+        if isinstance(item, dict) and isinstance(item.get("url"), str)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            int(item.get("width") or 0) * int(item.get("height") or 0),
+            int(item.get("width") or 0),
+        ),
+        reverse=True,
+    )
+    return str(candidates[0]["url"])
+
+
+def _extract_invidious_info_sync(url: str) -> dict[str, Any]:
+    data, _api_url = _fetch_invidious_video_sync(url)
+    video_id = _youtube_video_id(url)
+    return {
+        "id": video_id,
+        "title": data.get("title"),
+        "uploader": data.get("author"),
+        "channel": data.get("author"),
+        "duration": data.get("lengthSeconds"),
+        "thumbnail": _invidious_thumbnail_url(data),
+        "webpage_url": url,
+    }
+
+
+def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
+    streams = data.get("adaptiveFormats")
+    if not isinstance(streams, list):
+        return None
+
+    candidates = []
+    for item in streams:
+        if not isinstance(item, dict):
+            continue
+        media_url = item.get("url")
+        if not isinstance(media_url, str) or not media_url.strip():
+            continue
+        mime_type = str(item.get("type") or "").lower()
+        audio_quality = str(item.get("audioQuality") or "").strip()
+        if not audio_quality and not mime_type.startswith("audio/"):
+            continue
+        candidates.append(item)
+
+    if not candidates:
+        return None
+
+    def _score(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("bitrate") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return max(candidates, key=_score)
+
+
+def _invidious_raw_extension(stream: dict[str, Any]) -> str:
+    mime = str(stream.get("type") or "").lower()
+    container = str(stream.get("container") or "").lower()
+    encoding = str(stream.get("encoding") or "").lower()
+    probe = " ".join((mime, container, encoding))
+    if "webm" in probe or "opus" in probe:
+        return "webm"
+    if "mp4" in probe or "m4a" in probe or "aac" in probe:
+        return "m4a"
+    if "ogg" in probe:
+        return "ogg"
+    return "audio"
+
+
+def _run_invidious_mp3_sync(
+    url: str,
+    out_template: str,
+    bitrate_kbps: int,
+) -> str:
+    data, api_url = _fetch_invidious_video_sync(url)
+    stream = _pick_invidious_audio_stream(data)
+    if stream is None:
+        raise MusicDownloadError("Invidious returned no usable audio stream")
+
+    media_url = urljoin(f"{api_url}/", str(stream["url"]))
+    media_host = (urlparse(media_url).hostname or "").lower()
+    if media_host in {"localhost", "127.0.0.1", "::1"}:
+        raise MusicDownloadError("Invidious returned unsafe local media URL")
+
+    base_path = out_template.replace(".%(ext)s", "")
+    expected = f"{base_path}.mp3"
+    raw_path = f"{base_path}.invidious.{_invidious_raw_extension(stream)}"
+    headers = {"User-Agent": "AbangRender-MusicBot/1.0"}
+
+    try:
+        total = 0
+        with httpx.Client(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            with client.stream("GET", media_url, headers=headers) as response:
+                response.raise_for_status()
+                with open(raw_path, "wb") as handle:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > INVIDIOUS_MAX_SOURCE_BYTES:
+                            raise MusicDownloadError(
+                                "Invidious audio source exceeded safety limit"
+                            )
+                        handle.write(chunk)
+
+        if total <= 0:
+            raise MusicDownloadError("Invidious audio source was empty")
+
+        process = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                raw_path,
+                "-map",
+                "0:a:0?",
+                "-vn",
+                "-ac",
+                "2",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                f"{int(bitrate_kbps)}k",
+                expected,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        if process.returncode != 0 or not os.path.isfile(expected):
+            error_text = (process.stderr or "").strip()
+            raise MusicDownloadError(
+                "Invidious ffmpeg conversion failed"
+                + (f": {error_text[-500:]}" if error_text else "")
+            )
+
+        logging.info(
+            "Invidious YouTube fallback succeeded: instance=%s source_bytes=%s",
+            api_url,
+            total,
+        )
+        return expected
+    finally:
+        try:
+            os.remove(raw_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 
 def _youtube_video_id(url: str) -> str | None:
@@ -595,7 +833,20 @@ def _run_ytdlp_mp3_sync(
     source: str,
 ) -> str:
     low_memory_mode = source == "youtube" and _youtube_low_memory_mode()
+    invidious_first_error: Exception | None = None
     piped_first_error: Exception | None = None
+
+    if low_memory_mode and _configured_invidious_api_urls():
+        try:
+            logging.info("YouTube low-memory mode: trying Invidious before Piped/yt-dlp")
+            return _run_invidious_mp3_sync(url, out_template, bitrate_kbps)
+        except Exception as exc:
+            invidious_first_error = exc
+            _clear_ytdlp_outputs(out_template)
+            logging.warning(
+                "Invidious-first YouTube attempt failed; continuing low-memory fallbacks: error=%s",
+                exc,
+            )
 
     if low_memory_mode and _configured_piped_api_urls():
         try:
@@ -618,6 +869,8 @@ def _run_ytdlp_mp3_sync(
             raise MusicDownloadError(str(first_error)) from first_error
 
         errors: list[str] = []
+        if invidious_first_error is not None:
+            errors.append(f"invidious-first: {invidious_first_error}")
         if piped_first_error is not None:
             errors.append(f"piped-first: {piped_first_error}")
         errors.append(f"primary: {first_error}")
@@ -660,6 +913,19 @@ def _run_ytdlp_mp3_sync(
                     "YouTube audio client failed: client=%s error=%s",
                     client,
                     fallback_error,
+                )
+
+        invidious_urls = _configured_invidious_api_urls()
+        if invidious_urls:
+            _clear_ytdlp_outputs(out_template)
+            try:
+                return _run_invidious_mp3_sync(url, out_template, bitrate_kbps)
+            except Exception as invidious_error:
+                last_error = invidious_error
+                errors.append(f"invidious: {invidious_error}")
+                logging.warning(
+                    "Invidious YouTube fallback exhausted: error=%s",
+                    invidious_error,
                 )
 
         piped_urls = _configured_piped_api_urls()

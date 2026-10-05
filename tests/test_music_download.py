@@ -223,3 +223,176 @@ def test_low_memory_metadata_falls_back_to_one_primary_ytdlp(monkeypatch):
 
     assert result["title"] == "Primary Song"
     assert calls == ["piped", ("yt-dlp", {})]
+
+
+def test_invidious_api_urls_keep_https_urls_intact(monkeypatch):
+    monkeypatch.setenv(
+        "INVIDIOUS_API_URLS",
+        "https://inv.nadeko.net, https://invidious.nerdvpn.de/",
+    )
+
+    assert music_download._configured_invidious_api_urls() == [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+    ]
+
+
+def test_pick_invidious_audio_stream_prefers_highest_bitrate_audio():
+    data = {
+        "adaptiveFormats": [
+            {
+                "url": "https://cdn.example/video",
+                "type": "video/mp4",
+                "bitrate": 2_000_000,
+            },
+            {
+                "url": "https://cdn.example/audio-low",
+                "type": "audio/webm",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 128_000,
+            },
+            {
+                "url": "https://cdn.example/audio-high",
+                "type": "audio/mp4",
+                "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                "bitrate": 160_000,
+            },
+        ]
+    }
+
+    stream = music_download._pick_invidious_audio_stream(data)
+
+    assert stream is not None
+    assert stream["url"] == "https://cdn.example/audio-high"
+
+
+def test_extract_invidious_info_maps_video_metadata(monkeypatch):
+    monkeypatch.setattr(
+        music_download,
+        "_fetch_invidious_video_sync",
+        lambda _url: (
+            {
+                "title": "Example Song",
+                "author": "Example Artist",
+                "lengthSeconds": 245,
+                "videoThumbnails": [
+                    {"url": "https://img.example/small.jpg", "width": 120, "height": 90},
+                    {"url": "https://img.example/large.jpg", "width": 1280, "height": 720},
+                ],
+            },
+            "https://inv.example",
+        ),
+    )
+
+    metadata = music_download._extract_invidious_info_sync(
+        "https://youtu.be/Ftffph3fVEs"
+    )
+
+    assert metadata["id"] == "Ftffph3fVEs"
+    assert metadata["title"] == "Example Song"
+    assert metadata["uploader"] == "Example Artist"
+    assert metadata["duration"] == 245
+    assert metadata["thumbnail"] == "https://img.example/large.jpg"
+
+
+def test_low_memory_audio_prefers_invidious_before_piped(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "true")
+    monkeypatch.setenv("INVIDIOUS_API_URLS", "https://inv.example")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    calls = []
+
+    def invidious(url, out_template, bitrate_kbps):
+        calls.append(("invidious", url, bitrate_kbps))
+        return "/tmp/invidious.mp3"
+
+    def fail_piped(*_args, **_kwargs):
+        raise AssertionError("Piped should not run after successful Invidious")
+
+    def fail_ytdlp(*_args, **_kwargs):
+        raise AssertionError("yt-dlp should not run after successful Invidious")
+
+    monkeypatch.setattr(music_download, "_run_invidious_mp3_sync", invidious)
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", fail_piped)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_once", fail_ytdlp)
+
+    result = music_download._run_ytdlp_mp3_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "/tmp/audio.%(ext)s",
+        192,
+        "youtube",
+    )
+
+    assert result == "/tmp/invidious.mp3"
+    assert calls == [("invidious", "https://youtu.be/Ftffph3fVEs", 192)]
+
+
+def test_low_memory_audio_falls_from_invidious_to_piped(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "true")
+    monkeypatch.setenv("INVIDIOUS_API_URLS", "https://inv.example")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    calls = []
+
+    def fail_invidious(*_args, **_kwargs):
+        calls.append("invidious")
+        raise RuntimeError("invidious unavailable")
+
+    def piped(*_args, **_kwargs):
+        calls.append("piped")
+        return "/tmp/piped.mp3"
+
+    def fail_ytdlp(*_args, **_kwargs):
+        raise AssertionError("yt-dlp should not run after successful Piped")
+
+    monkeypatch.setattr(music_download, "_run_invidious_mp3_sync", fail_invidious)
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", piped)
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_once", fail_ytdlp)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
+
+    result = music_download._run_ytdlp_mp3_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "/tmp/audio.%(ext)s",
+        192,
+        "youtube",
+    )
+
+    assert result == "/tmp/piped.mp3"
+    assert calls == ["invidious", "piped"]
+
+
+def test_low_memory_metadata_prefers_invidious_before_piped(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_LOW_MEMORY_MODE", "true")
+    monkeypatch.setenv("INVIDIOUS_API_URLS", "https://inv.example")
+    monkeypatch.setenv("PIPED_API_URLS", "https://piped.example")
+
+    expected = {
+        "id": "Ftffph3fVEs",
+        "title": "Invidious Song",
+        "uploader": "Invidious Artist",
+        "duration": 240,
+    }
+    monkeypatch.setattr(
+        music_download,
+        "_extract_invidious_info_sync",
+        lambda _url: expected,
+    )
+    monkeypatch.setattr(
+        music_download,
+        "_extract_piped_info_sync",
+        lambda _url: (_ for _ in ()).throw(
+            AssertionError("Piped metadata should not run after successful Invidious")
+        ),
+    )
+    monkeypatch.setattr(
+        music_download,
+        "_extract_info_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("yt-dlp metadata should not run after successful Invidious")
+        ),
+    )
+
+    assert music_download._extract_info_sync(
+        "https://youtu.be/Ftffph3fVEs",
+        "youtube",
+    ) == expected
