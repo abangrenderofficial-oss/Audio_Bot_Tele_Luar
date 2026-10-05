@@ -399,11 +399,10 @@ function stopProviderProcesses() {
 }
 
 function scheduleProviderStop() {
-  const timer = setTimeout(() => {
-    stopProviderProcesses();
-    console.log("[POT-ADAPTER] released bgutil provider memory");
-  }, 1200);
-  timer.unref?.();
+  // Keep the provider hot. Cobalt refreshes its YouTube trusted session every
+  // 300 seconds; killing bgutil after every mint creates a cold-start window
+  // where requests can hit youtube.login before the next session is ready.
+  // The provider is intentionally kept alive for the lifetime of the service.
 }
 
 async function ensureProviderRunning() {
