@@ -654,7 +654,11 @@ function isAllowedSocialUrl(source, value) {
       tiktok: host === "tiktok.com" || host.endsWith(".tiktok.com"),
       instagram:
         host === "instagram.com" || host.endsWith(".instagram.com"),
-      threads: host === "threads.net" || host.endsWith(".threads.net"),
+      threads:
+        host === "threads.net" ||
+        host.endsWith(".threads.net") ||
+        host === "threads.com" ||
+        host.endsWith(".threads.com"),
       twitter:
         host === "x.com" ||
         host.endsWith(".x.com") ||
