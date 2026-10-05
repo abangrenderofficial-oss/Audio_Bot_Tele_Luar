@@ -350,6 +350,112 @@ async function startWarp() {
   }
 }
 
+const PROVIDER_ENDPOINT = new URL(PROVIDER_URL);
+const PROVIDER_HOST = PROVIDER_ENDPOINT.hostname || "127.0.0.1";
+const PROVIDER_PORT = Number(PROVIDER_ENDPOINT.port || "4416");
+const PROVIDER_SCRIPT = path.join(
+  process.cwd(),
+  ".bgutil/server/build/main.js"
+);
+let managedProvider = null;
+let providerStartPromise = null;
+
+function stopProviderProcesses() {
+  if (managedProvider && !managedProvider.killed) {
+    try {
+      managedProvider.kill("SIGTERM");
+    } catch {}
+    managedProvider = null;
+  }
+
+  try {
+    for (const entry of fs.readdirSync("/proc", { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+      const pid = Number(entry.name);
+      if (!pid || pid === process.pid) continue;
+
+      let args;
+      try {
+        args = fs
+          .readFileSync(`/proc/${entry.name}/cmdline`, "utf8")
+          .split("\0")
+          .filter(Boolean);
+      } catch {
+        continue;
+      }
+
+      const isProvider = args.some(
+        (arg) =>
+          arg === ".bgutil/server/build/main.js" ||
+          arg.endsWith("/.bgutil/server/build/main.js")
+      );
+      if (!isProvider) continue;
+
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
+    }
+  } catch {}
+}
+
+function scheduleProviderStop() {
+  const timer = setTimeout(() => {
+    stopProviderProcesses();
+    console.log("[POT-ADAPTER] released bgutil provider memory");
+  }, 1200);
+  timer.unref?.();
+}
+
+async function ensureProviderRunning() {
+  if (await waitForPort(PROVIDER_HOST, PROVIDER_PORT, 750)) return;
+
+  if (providerStartPromise) {
+    await providerStartPromise;
+    return;
+  }
+
+  providerStartPromise = (async () => {
+    if (!fs.existsSync(PROVIDER_SCRIPT)) {
+      throw new Error(`POT provider script missing: ${PROVIDER_SCRIPT}`);
+    }
+
+    managedProvider = spawn(
+      process.execPath,
+      [
+        PROVIDER_SCRIPT,
+        "--host",
+        PROVIDER_HOST,
+        "--port",
+        String(PROVIDER_PORT),
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: "ignore",
+      }
+    );
+
+    managedProvider.once("exit", () => {
+      managedProvider = null;
+    });
+
+    const ready = await waitForPort(
+      PROVIDER_HOST,
+      PROVIDER_PORT,
+      20000
+    );
+    if (!ready) {
+      stopProviderProcesses();
+      throw new Error("POT provider did not become ready");
+    }
+
+    console.log("[POT-ADAPTER] bgutil provider started on demand");
+  })().finally(() => {
+    providerStartPromise = null;
+  });
+
+  await providerStartPromise;
+}
+
 const WEB_EMBEDDED_CONTEXT = {
   client: {
     clientName: "WEB_EMBEDDED_PLAYER",
@@ -390,6 +496,8 @@ async function requestProvider(body) {
 
 async function fetchSession() {
   let lastError = "provider unavailable";
+  await ensureProviderRunning();
+
   const proxy = WARP_ENABLED
     ? `socks5h://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}`
     : undefined;
@@ -415,6 +523,7 @@ async function fetchSession() {
       console.log(
         `[POT-ADAPTER] minted WEB_EMBEDDED session via ${proxy ? "WARP" : "direct"} egress`
       );
+      scheduleProviderStop();
       return JSON.stringify(embedded);
     } catch (error) {
       lastError = error?.message || String(error);
