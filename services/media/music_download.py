@@ -531,11 +531,21 @@ def _pick_invidious_audio_stream(data: dict[str, Any]) -> dict[str, Any] | None:
     if not candidates:
         return None
 
-    def _score(item: dict[str, Any]) -> int:
+    def _score(item: dict[str, Any]) -> tuple[int, int]:
+        mime_type = str(item.get("type") or "").lower()
+        container = str(item.get("container") or "").lower()
+        encoding = str(item.get("encoding") or "").lower()
+        prefers_m4a = int(
+            "audio/mp4" in mime_type
+            or container in {"m4a", "mp4"}
+            or encoding in {"aac", "mp4a"}
+            or "mp4a" in mime_type
+        )
         try:
-            return int(item.get("bitrate") or 0)
+            bitrate = int(item.get("bitrate") or 0)
         except (TypeError, ValueError):
-            return 0
+            bitrate = 0
+        return prefers_m4a, bitrate
 
     return max(candidates, key=_score)
 
