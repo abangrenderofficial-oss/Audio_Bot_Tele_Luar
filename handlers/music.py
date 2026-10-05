@@ -352,6 +352,170 @@ async def process_music_link(
                     )
                     return
 
+        if service_name == "youtube":
+            video_id, shared_fast_future, is_fast_leader = (
+                await _claim_fast_youtube_inflight(source_url)
+            )
+
+            if not is_fast_leader and shared_fast_future is not None:
+                try:
+                    if status_message:
+                        await safe_edit_text(
+                            status_message,
+                            "🎧 Lagu sama sedang diproses • guna hasil yang sama...",
+                        )
+                    shared_result = await asyncio.wait_for(
+                        asyncio.shield(shared_fast_future),
+                        timeout=190.0,
+                    )
+                    if not shared_result.get("ok"):
+                        raise MusicDownloadError(
+                            str(
+                                shared_result.get("error")
+                                or "shared fast path failed"
+                            )
+                        )
+
+                    shared_title = str(
+                        shared_result.get("title") or "Audio"
+                    )
+                    shared_performer = str(
+                        shared_result.get("performer") or "YouTube"
+                    )
+                    shared_duration = shared_result.get("duration")
+
+                    await safe_edit_text(status_message, bm.uploading_status())
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    shared_send_started = time.perf_counter()
+                    await send_audio_with_thumbnail(
+                        message.reply_audio,
+                        audio=str(shared_result["file_id"]),
+                        title=shared_title,
+                        performer=shared_performer,
+                        caption=(
+                            f"🎵 {html.escape(shared_title)}\nOriginal Quality"
+                        ),
+                        bot_url=bot_url,
+                        duration=shared_duration,
+                        parse_mode="HTML",
+                    )
+                    logging.info(
+                        "Music timing: stage=inflight_shared_send "
+                        "seconds=%.2f video_id=%s",
+                        time.perf_counter() - shared_send_started,
+                        video_id,
+                    )
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+                except Exception as shared_error:
+                    logging.warning(
+                        "Shared Fast Original result failed; "
+                        "falling back to MP3 pipeline: %s",
+                        shared_error,
+                    )
+
+            if is_fast_leader:
+                fast_result: dict[str, object] | None = None
+                fast_error: Exception | None = None
+                try:
+                    if status_message:
+                        await safe_edit_text(
+                            status_message,
+                            "🎧 Fast Original • sedang sediakan audio...",
+                        )
+                    await send_chat_action_if_needed(
+                        bot,
+                        message.chat.id,
+                        "upload_audio",
+                        business_id,
+                    )
+                    fast_result = await send_youtube_fast_to_telegram(
+                        source_url,
+                        chat_id=message.chat.id,
+                        business_connection_id=business_id,
+                    )
+                except Exception as exc:
+                    fast_error = exc
+                    logging.warning(
+                        "Fast Original direct path failed; "
+                        "falling back to MP3 pipeline: %s",
+                        exc,
+                    )
+                    if (
+                        shared_fast_future is not None
+                        and not shared_fast_future.done()
+                    ):
+                        shared_fast_future.set_result(
+                            {"ok": False, "error": str(exc)}
+                        )
+                else:
+                    fast_title = str(fast_result.get("title") or "Audio")
+                    fast_performer = str(
+                        fast_result.get("performer") or "YouTube"
+                    )
+                    fast_duration = fast_result.get("duration")
+
+                    if (
+                        shared_fast_future is not None
+                        and not shared_fast_future.done()
+                    ):
+                        shared_fast_future.set_result(
+                            {
+                                "ok": True,
+                                "file_id": str(fast_result["file_id"]),
+                                "file_size": fast_result.get("file_size"),
+                                "title": fast_title,
+                                "performer": fast_performer,
+                                "duration": fast_duration,
+                            }
+                        )
+
+                    try:
+                        await store_cached_audio(
+                            source_url,
+                            telegram_file_id=str(fast_result["file_id"]),
+                            variant="fast_original",
+                            title=fast_title,
+                            performer=fast_performer,
+                            duration_seconds=(
+                                float(fast_duration)
+                                if fast_duration is not None
+                                else None
+                            ),
+                            file_size_bytes=(
+                                int(fast_result.get("file_size"))
+                                if fast_result.get("file_size") is not None
+                                else None
+                            ),
+                        )
+                    except Exception as exc:
+                        logging.warning(
+                            "Fast Original persistent cache store failed: %s",
+                            exc,
+                        )
+                finally:
+                    await _release_fast_youtube_inflight(
+                        video_id,
+                        shared_fast_future,
+                    )
+
+                if fast_result is not None and fast_error is None:
+                    request_lease.mark_success()
+                    await maybe_delete_user_message(
+                        message,
+                        user_settings.get("delete_message"),
+                    )
+                    return
+
         stage_started = time.perf_counter()
         metadata = await fetch_music_metadata(
             source_url,
@@ -410,146 +574,6 @@ async def process_music_link(
                 user_settings.get("delete_message"),
             )
             return
-
-        if service_name == "youtube":
-            video_id, shared_fast_future, is_fast_leader = (
-                await _claim_fast_youtube_inflight(source_url)
-            )
-
-            if not is_fast_leader and shared_fast_future is not None:
-                try:
-                    if status_message:
-                        await safe_edit_text(
-                            status_message,
-                            (
-                                f"🎧 {metadata.title}\n\n"
-                                "Lagu sama sedang diproses • guna hasil yang sama..."
-                            ),
-                        )
-                    shared_result = await asyncio.wait_for(
-                        asyncio.shield(shared_fast_future),
-                        timeout=190.0,
-                    )
-                    if not shared_result.get("ok"):
-                        raise MusicDownloadError(
-                            str(shared_result.get("error") or "shared fast path failed")
-                        )
-
-                    await safe_edit_text(status_message, bm.uploading_status())
-                    await send_chat_action_if_needed(
-                        bot,
-                        message.chat.id,
-                        "upload_audio",
-                        business_id,
-                    )
-                    shared_send_started = time.perf_counter()
-                    await send_audio_with_thumbnail(
-                        message.reply_audio,
-                        audio=str(shared_result["file_id"]),
-                        title=metadata.title,
-                        performer=metadata.performer,
-                        caption=(
-                            f"🎵 {html.escape(metadata.title)}\nOriginal Quality"
-                        ),
-                        bot_url=bot_url,
-                        duration=metadata.duration,
-                        parse_mode="HTML",
-                    )
-                    logging.info(
-                        "Music timing: stage=inflight_shared_send seconds=%.2f video_id=%s",
-                        time.perf_counter() - shared_send_started,
-                        video_id,
-                    )
-                    request_lease.mark_success()
-                    await maybe_delete_user_message(
-                        message,
-                        user_settings.get("delete_message"),
-                    )
-                    return
-                except Exception as shared_error:
-                    logging.warning(
-                        "Shared Fast Original result failed; falling back to MP3 pipeline: %s",
-                        shared_error,
-                    )
-
-            if is_fast_leader:
-                fast_result: dict[str, object] | None = None
-                fast_error: Exception | None = None
-                try:
-                    if status_message:
-                        await safe_edit_text(
-                            status_message,
-                            (
-                                f"🎧 {metadata.title}\n\n"
-                                "Fast Original • sedang hantar terus dari Oregon..."
-                            ),
-                        )
-                    await send_chat_action_if_needed(
-                        bot,
-                        message.chat.id,
-                        "upload_audio",
-                        business_id,
-                    )
-                    fast_result = await send_youtube_fast_to_telegram(
-                        source_url,
-                        chat_id=message.chat.id,
-                        title=metadata.title,
-                        performer=metadata.performer,
-                        duration=metadata.duration,
-                        business_connection_id=business_id,
-                    )
-                except Exception as exc:
-                    fast_error = exc
-                    logging.warning(
-                        "Fast Original direct path failed; falling back to MP3 pipeline: %s",
-                        exc,
-                    )
-                    if shared_fast_future is not None and not shared_fast_future.done():
-                        shared_fast_future.set_result(
-                            {"ok": False, "error": str(exc)}
-                        )
-                else:
-                    if shared_fast_future is not None and not shared_fast_future.done():
-                        shared_fast_future.set_result(
-                            {
-                                "ok": True,
-                                "file_id": str(fast_result["file_id"]),
-                                "file_size": fast_result.get("file_size"),
-                            }
-                        )
-
-                    try:
-                        await store_cached_audio(
-                            source_url,
-                            telegram_file_id=str(fast_result["file_id"]),
-                            variant="fast_original",
-                            title=metadata.title,
-                            performer=metadata.performer,
-                            duration_seconds=metadata.duration,
-                            file_size_bytes=(
-                                int(fast_result.get("file_size"))
-                                if fast_result.get("file_size") is not None
-                                else None
-                            ),
-                        )
-                    except Exception as exc:
-                        logging.warning(
-                            "Fast Original persistent cache store failed: %s",
-                            exc,
-                        )
-                finally:
-                    await _release_fast_youtube_inflight(
-                        video_id,
-                        shared_fast_future,
-                    )
-
-                if fast_result is not None and fast_error is None:
-                    request_lease.mark_success()
-                    await maybe_delete_user_message(
-                        message,
-                        user_settings.get("delete_message"),
-                    )
-                    return
 
         job_id = (
             f"{message.chat.id}-{message.message_id}-"
