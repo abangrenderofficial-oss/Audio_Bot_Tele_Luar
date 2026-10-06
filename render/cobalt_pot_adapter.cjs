@@ -1864,7 +1864,7 @@ async function fetchDlpandaThreadsMedia(mediaUrl, prefix) {
     const state =
       (stateTag.match(/data-state=["']([^"']+)["']/i) || [,""])[1];
     const messageMatch = resultHtml.match(
-      /<[^>]+data-state-message[^>]*>([\\s\\S]{0,1200}?)<\\/[^>]+>/i
+      /<[^>]+data-state-message[^>]*>([\s\S]{0,1200}?)<\/[^>]+>/i
     );
     const message = String(messageMatch?.[1] || "")
       .replace(/<[^>]+>/g, " ")
