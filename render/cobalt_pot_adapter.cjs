@@ -1514,6 +1514,68 @@ async function fetchPostCopilotThreadsMedia(mediaUrl, prefix) {
   throw new Error(`PostCopilot media download failed: ${lastError}`);
 }
 
+
+async function probeDlpandaThreadsAssets(mediaUrl) {
+  try {
+    const pageUrl = "https://dlpanda.com/threads";
+    const response = await fetch(pageUrl, {
+      redirect: "follow",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    const html = await response.text();
+    const scriptSources = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)]
+      .map((match) => {
+        try { return new URL(match[1], pageUrl).toString(); } catch { return ""; }
+      })
+      .filter(Boolean);
+    const htmlHints = [...html.matchAll(/["']([^"']{0,180}(?:\/api\/|api\.|download|parse|threads)[^"']{0,240})["']/gi)]
+      .map((match) => match[1])
+      .filter((value, index, array) => array.indexOf(value) === index)
+      .slice(0, 60);
+
+    console.log(
+      `[DLPANDA-DIAG] page status=${response.status} bytes=${html.length} scripts=${scriptSources.slice(0,20).join(" | ")} html_hints=${htmlHints.join(" | ").slice(0,6000)}`
+    );
+
+    for (const scriptUrl of scriptSources.slice(0, 20)) {
+      try {
+        const jsResponse = await fetch(scriptUrl, {
+          headers: {
+            "user-agent": "Mozilla/5.0",
+            "accept": "*/*",
+            "referer": pageUrl,
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        const js = await jsResponse.text();
+        if (!/threads|\/api\/|download|parse/i.test(js)) continue;
+        const hints = [...js.matchAll(/["']([^"']{0,180}(?:\/api\/|https?:\/\/[^"' ]+|download|parse|threads)[^"']{0,260})["']/gi)]
+          .map((match) => match[1])
+          .filter((value, index, array) => array.indexOf(value) === index)
+          .slice(0, 80);
+        console.log(
+          `[DLPANDA-DIAG] asset=${scriptUrl} status=${jsResponse.status} bytes=${js.length} hints=${hints.join(" | ").slice(0,9000)}`
+        );
+      } catch (error) {
+        console.log(
+          `[DLPANDA-DIAG] asset_error=${scriptUrl} error=${String(error?.message || error).slice(0,300)}`
+        );
+      }
+    }
+  } catch (error) {
+    console.log(
+      `[DLPANDA-DIAG] page_error=${String(error?.message || error).slice(0,500)} url=${mediaUrl}`
+    );
+  }
+}
+
 function probeAudioCodec(filePath) {
   const result = spawnSync(
     "ffprobe",
@@ -1694,6 +1756,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
             String(postCopilotError?.message || postCopilotError).slice(0, 1200)
           );
           clearOutputs();
+          await probeDlpandaThreadsAssets(effectiveMediaUrl);
         }
       }
     }
