@@ -65,6 +65,7 @@ from services.media.delivery import (
 )
 from services.media.audio_flow import run_audio_flow
 from services.media.music_download import send_social_fast_to_telegram
+from services.admin_music_monitor import mirror_private_audio_to_admin_group
 from services.music_group_dedupe import duplicate_keeper_message_id
 from services.storage.music_cache import get_cached_social_audio, store_cached_social_audio
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
@@ -276,10 +277,30 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             )
             return sent
 
+        async def _reply_audio_with_admin_monitor(**kwargs):
+            sent = await message.reply_audio(**kwargs)
+            audio = getattr(sent, "audio", None)
+            await mirror_private_audio_to_admin_group(
+                message,
+                file_id=getattr(audio, "file_id", None),
+                title=(
+                    kwargs.get("title")
+                    or getattr(audio, "title", None)
+                    or getattr(audio, "file_name", None)
+                ),
+                performer=(
+                    kwargs.get("performer")
+                    or getattr(audio, "performer", None)
+                ),
+                duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+                platform="SoundCloud",
+            )
+            return sent
+
         audio_sender = (
             _reply_audio_with_group_playlist
             if group_music_connected
-            else message.reply_audio
+            else _reply_audio_with_admin_monitor
         )
 
         cache_key = build_audio_cache_key(source_url)
@@ -388,6 +409,15 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                     performer=performer,
                     duration=duration,
                 )
+                if not group_music_connected:
+                    await mirror_private_audio_to_admin_group(
+                        message,
+                        file_id=file_id,
+                        title=title,
+                        performer=performer,
+                        duration=duration,
+                        platform="SoundCloud",
+                    )
                 request_lease.mark_success()
                 await maybe_delete_user_message(
                     message,
