@@ -1482,12 +1482,17 @@ async def send_social_fast_to_telegram(
         raise MusicDownloadError(f"Unsupported social source: {source}")
 
     if source == "threads":
-        # Keep Threads fast: the Render social worker owns Threads media
-        # detection. It first extracts audio from a video when present, then
-        # falls back to a standalone Threads music/audio asset for image posts.
-        # Pass /share/<id>/ aliases through unchanged so we do not spend tens
-        # of seconds in the bot-side resolver waterfall before media handling.
-        logging.info("Threads URL handed directly to Render hybrid media worker")
+        # Resolve only the mobile /share/<id>/ alias with one Chromium-native
+        # fetch, then let the Render worker handle the actual hybrid media flow:
+        # video audio first, standalone Threads music/audio second.
+        from services.platforms.threads_media import resolve_threads_share_fast
+
+        resolved_url = await resolve_threads_share_fast(url)
+        if resolved_url != url:
+            logging.info("Threads share alias resolved before Render worker")
+        else:
+            logging.info("Threads URL handed to Render hybrid media worker")
+        url = resolved_url
 
     base_url = _youtube_worker_base_url()
     api_key = _youtube_worker_auth_token()
