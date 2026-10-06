@@ -1695,6 +1695,80 @@ function cleanThreadsEmbedValue(value) {
     .trim();
 }
 
+async function fetchFixThreadsMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const original = new URL(mediaUrl);
+  const pageUrl = "https://fixthreads.seria.moe" + original.pathname;
+  const response = await fetch(pageUrl, {
+    redirect: "follow",
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+      "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  const html = await response.text();
+  if (!response.ok) {
+    throw new Error("FixThreads HTTP " + response.status + ": " + html.slice(0, 300));
+  }
+
+  const canonical = cleanThreadsEmbedValue(
+    readHtmlCanonical(html) || readHtmlMetaContent(html, "og:url")
+  );
+  const candidates = [];
+  const seen = new Set();
+  const add = (value, kind, score) => {
+    const url = cleanThreadsEmbedValue(value);
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({ url, kind, score });
+  };
+
+  add(readHtmlMetaContent(html, "og:video:secure_url"), "video", 2400);
+  add(readHtmlMetaContent(html, "og:video:url"), "video", 2350);
+  add(readHtmlMetaContent(html, "og:video"), "video", 2300);
+  add(readHtmlMetaContent(html, "twitter:player:stream"), "video", 2250);
+  add(readHtmlMetaContent(html, "og:audio:secure_url"), "audio", 2200);
+  add(readHtmlMetaContent(html, "og:audio"), "audio", 2150);
+
+  candidates.sort((a, b) => b.score - a.score);
+  if (!candidates.length) {
+    throw new Error(
+      "FixThreads returned no playable media" +
+      (canonical ? " canonical=" + canonical : "")
+    );
+  }
+
+  let lastError = "FixThreads media download failed";
+  for (const candidate of candidates.slice(0, 8)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate, prefix, "", { referer: pageUrl }
+      );
+      const title = cleanThreadsEmbedValue(readHtmlMetaContent(html, "og:title"));
+      console.log(
+        `[SOCIAL-WORKER] threads FixThreads ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title: title || (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+          performer: "Threads",
+          duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
 async function fetchFxThreadsPage(mediaUrl) {
   const original = new URL(mediaUrl);
   const pageUrl = "https://fx.akitsuki.me" + original.pathname;
@@ -3085,6 +3159,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
 
       const providers = effectiveMediaUrl !== mediaUrl
         ? [
+            ["FixThreads", fetchFixThreadsMedia],
             ["FxThreads", fetchFxThreadsMedia],
             ["vxThreads", fetchVxThreadsMedia],
             ["PostCopilot", fetchPostCopilotThreadsMedia],
@@ -3096,6 +3171,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
               ...(String(process.env.EASYDOWN_API_KEY || "").trim()
                 ? [["EasyDown", fetchEasyDownThreadsMedia]]
                 : []),
+              ["FixThreads", fetchFixThreadsMedia],
               ["curl-x", fetchCurlXThreadsMedia],
               ["Microlink", fetchMicrolinkThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
@@ -3105,6 +3181,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
               ["ThreadsDL", fetchThreadsDlMedia],
             ]
           : [
+              ["FixThreads", fetchFixThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
               ["vxThreads", fetchVxThreadsMedia],
