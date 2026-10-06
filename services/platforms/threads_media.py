@@ -1068,12 +1068,30 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
         logging.warning("Threads Chromium fallback unavailable: browser binary not found")
         return None
 
-    attempts: list[tuple[str, str | None]] = [
-        ("direct", None),
-        ("warp", "socks5://127.0.0.1:1080"),
+    attempts: list[tuple[str, str | None, str]] = [
+        (
+            "direct-mobile",
+            None,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 "
+            "Mobile/15E148 Safari/604.1",
+        ),
+        (
+            "direct",
+            None,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        ),
+        (
+            "warp-mobile",
+            "socks5://127.0.0.1:1080",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 "
+            "Mobile/15E148 Safari/604.1",
+        ),
     ]
 
-    for mode, proxy_url in attempts:
+    for mode, proxy_url, user_agent in attempts:
         profile_dir = tempfile.mkdtemp(prefix=f"threads-share-chrome-{mode}-")
         process: subprocess.Popen | None = None
         try:
@@ -1093,7 +1111,7 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
                 "--remote-debugging-address=127.0.0.1",
                 "--remote-debugging-port=0",
                 f"--user-data-dir={profile_dir}",
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                f"--user-agent={user_agent}",
             ]
             if proxy_url:
                 command.append(f"--proxy-server={proxy_url}")
@@ -1134,7 +1152,7 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
 
             last_url = url
             last_title = "-"
-            navigation_deadline = time.monotonic() + 15.0
+            navigation_deadline = time.monotonic() + 22.0
             endpoint = f"http://127.0.0.1:{port}/json"
             while time.monotonic() < navigation_deadline:
                 if process.poll() is not None:
