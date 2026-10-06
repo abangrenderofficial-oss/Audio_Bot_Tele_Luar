@@ -1695,6 +1695,66 @@ function cleanThreadsEmbedValue(value) {
     .trim();
 }
 
+async function resolveThreadsShareViaFixThreads(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  const original = new URL(mediaUrl);
+  const pageUrl = "https://fixthreads.seria.moe" + original.pathname;
+  try {
+    const response = await fetch(pageUrl, {
+      redirect: "manual",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const location = String(response.headers.get("location") || "").trim();
+    if (location) {
+      const absolute = new URL(location, pageUrl).toString();
+      const match = absolute.match(
+        /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+      );
+      if (match) {
+        console.log(
+          "[SOCIAL-WORKER] threads FixThreads resolved share redirect -> " + match[0]
+        );
+        return match[0];
+      }
+    }
+
+    const html = await response.text();
+    const candidate = cleanThreadsEmbedValue(
+      readHtmlCanonical(html) || readHtmlMetaContent(html, "og:url")
+    );
+    const match = candidate.match(
+      /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+    );
+    if (match) {
+      console.log(
+        "[SOCIAL-WORKER] threads FixThreads resolved share metadata -> " + match[0]
+      );
+      return match[0];
+    }
+
+    console.warn(
+      "[SOCIAL-WORKER] threads FixThreads resolver miss status=" +
+      response.status + " location=" + (location.slice(0, 240) || "-")
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads FixThreads resolver failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+
+  return mediaUrl;
+}
+
 async function fetchFixThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const original = new URL(mediaUrl);
@@ -3143,9 +3203,13 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       // shell for /share/ aliases, so avoid the old multi-attempt crawler
       // waterfall. Try the preview UA once, then media providers directly.
       if (shareAlias) {
-        // Resolve the opaque mobile /share/ token at an edge location first.
-        // Render's own IP currently receives the generic Threads SPA shell.
-        effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
+        // FixThreads resolves the opaque share token from a separate network.
+        // Its /share route exposes the canonical post in a redirect even when
+        // its own media lookup cannot finish.
+        effectiveMediaUrl = await resolveThreadsShareViaFixThreads(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
+        }
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
         }
