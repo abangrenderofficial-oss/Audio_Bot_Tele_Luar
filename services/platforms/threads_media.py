@@ -1450,6 +1450,247 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return None
 
 
+def _resolve_threads_share_via_extension_worker_sync(url: str) -> str | None:
+    """Resolve a Threads /share/ alias inside a real MV3 extension service worker.
+
+    Threads Clean Link resolves these aliases from an extension service-worker
+    fetch with host permissions. Reproduce that exact origin instead of a normal
+    page/server request, which Meta currently serves as the generic SPA shell.
+    """
+    try:
+        from websockets.sync.client import connect as ws_connect
+    except Exception as exc:
+        logging.warning("Threads extension-worker resolver unavailable: %s", exc)
+        return None
+
+    binary = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    if not binary:
+        logging.warning("Threads extension-worker resolver unavailable: browser binary not found")
+        return None
+
+    extension_id = "hehokicokbgajpanjcajhmflaennnmdj"
+    extension_key = (
+        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwsulpvef7Tggdw39ft9kn/"
+        "AmboE4U5U+16uEir9kdo2CGvLqe2WbKLWnShqQj0XbDSMqASr8RgsSl6fkhSRfEW"
+        "t3qEuQ2QA9wQaeftPwoRGBUanuFTwIoeA6sNAoHJ8rhf+WTiwkA6IIBoYBNmNQrVg"
+        "PHicnkPkATbX2+yYTOD2Zwd78yAW4Wpd9kefIVr9TBVEtvq6xqvifm+tC6Y+/kKPY"
+        "CFUltUDoq+2ct9Yg1toVM/bWrhSiM+CX5jWEUSmRdFFid8dcjQDZ+HaIp5ALDHHeN"
+        "uo/xhM/X2bHZbsBLcUNgXQdskVB/D9qn9eIHrQ5l2OEdKOGktmh0KBXA1iCnwIDAQAB"
+    )
+
+    root_dir = tempfile.mkdtemp(prefix="threads-ext-worker-")
+    extension_dir = os.path.join(root_dir, "extension")
+    profile_dir = os.path.join(root_dir, "profile")
+    os.makedirs(extension_dir, exist_ok=True)
+    os.makedirs(profile_dir, exist_ok=True)
+    process: subprocess.Popen | None = None
+
+    try:
+        manifest = {
+            "manifest_version": 3,
+            "name": "Threads Share Resolver",
+            "version": "1.0",
+            "key": extension_key,
+            "background": {"service_worker": "background.js"},
+            "host_permissions": [
+                "https://*.threads.com/*",
+                "https://*.threads.net/*",
+            ],
+        }
+        with open(os.path.join(extension_dir, "manifest.json"), "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+
+        background = """
+chrome.runtime.onInstalled.addListener(() => {});
+chrome.runtime.onStartup.addListener(() => {});
+globalThis.__threadsResolverReady = true;
+"""
+        with open(os.path.join(extension_dir, "background.js"), "w", encoding="utf-8") as handle:
+            handle.write(background)
+
+        xvfb_run = shutil.which("xvfb-run")
+        command = (
+            [xvfb_run, "-a", binary]
+            if xvfb_run
+            else [binary, "--headless=new"]
+        ) + [
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=0",
+            "--remote-allow-origins=*",
+            f"--user-data-dir={profile_dir}",
+            f"--disable-extensions-except={extension_dir}",
+            f"--load-extension={extension_dir}",
+            "--no-proxy-server",
+            "about:blank",
+        ]
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        port_file = os.path.join(profile_dir, "DevToolsActivePort")
+        port: int | None = None
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            try:
+                with open(port_file, "r", encoding="utf-8") as handle:
+                    first_line = handle.readline().strip()
+                if first_line.isdigit():
+                    port = int(first_line)
+                    break
+            except (FileNotFoundError, OSError):
+                pass
+            time.sleep(0.1)
+
+        if not port:
+            logging.warning(
+                "Threads extension-worker resolver could not open DevTools rc=%s",
+                process.poll(),
+            )
+            return None
+
+        endpoint = f"http://127.0.0.1:{port}/json"
+        worker = None
+        worker_deadline = time.monotonic() + 8.0
+        while time.monotonic() < worker_deadline:
+            try:
+                with urllib.request.urlopen(endpoint, timeout=1.0) as response:
+                    targets = json.loads(response.read().decode("utf-8", errors="replace"))
+                if isinstance(targets, list):
+                    for item in targets:
+                        if (
+                            isinstance(item, dict)
+                            and item.get("type") == "service_worker"
+                            and str(item.get("url") or "").startswith(
+                                f"chrome-extension://{extension_id}/"
+                            )
+                            and item.get("webSocketDebuggerUrl")
+                        ):
+                            worker = item
+                            break
+                if worker:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        if not worker:
+            logging.warning("Threads extension-worker target not found")
+            return None
+
+        ws_url = str(worker.get("webSocketDebuggerUrl") or "")
+        expression = f"""
+(async () => {{
+  try {{
+    const response = await fetch({json.dumps(url)}, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
+    }});
+    return JSON.stringify({{
+      ok: true,
+      url: response.url,
+      status: response.status,
+      type: response.type
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: String(error && error.message || error || "fetch_failed")
+    }});
+  }}
+}})()
+"""
+
+        with ws_connect(ws_url, open_timeout=4, close_timeout=1) as websocket:
+            request_id = 71
+            websocket.send(
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "method": "Runtime.evaluate",
+                        "params": {
+                            "expression": expression,
+                            "awaitPromise": True,
+                            "returnByValue": True,
+                        },
+                    }
+                )
+            )
+            payload = None
+            response_deadline = time.monotonic() + 15.0
+            while time.monotonic() < response_deadline:
+                try:
+                    raw = websocket.recv(timeout=2)
+                except TimeoutError:
+                    continue
+                candidate = json.loads(raw)
+                if candidate.get("id") == request_id:
+                    payload = candidate
+                    break
+
+        if not isinstance(payload, dict) or payload.get("error"):
+            logging.warning(
+                "Threads extension-worker CDP evaluation failed: %s",
+                str((payload or {}).get("error") or "timeout")[:300],
+            )
+            return None
+
+        remote = payload.get("result", {}).get("result", {}).get("value")
+        try:
+            result = json.loads(remote) if isinstance(remote, str) else {}
+        except json.JSONDecodeError:
+            result = {}
+
+        final_url = str(result.get("url") or "").strip()
+        resolved = strip_threads_url(final_url)
+        if extract_threads_post_code(resolved):
+            logging.info(
+                "Resolved Threads share URL via extension worker: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+        logging.warning(
+            "Threads extension-worker fetch did not resolve: status=%s type=%s final=%s error=%s",
+            result.get("status"),
+            result.get("type"),
+            final_url[:300] or "-",
+            str(result.get("error") or "-")[:300],
+        )
+        return None
+    except Exception as exc:
+        logging.warning("Threads extension-worker resolver failed: %s", exc)
+        return None
+    finally:
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=2)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        shutil.rmtree(root_dir, ignore_errors=True)
+
+
 def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
     """Resolve /share/<id>/ by running fetch() inside real Chromium.
 
@@ -2131,9 +2372,14 @@ async def resolve_threads_share_fast(url: str) -> str:
         return candidate
 
     resolved = await asyncio.to_thread(
-        _resolve_threads_share_via_cdp_fetch_sync,
+        _resolve_threads_share_via_extension_worker_sync,
         candidate,
     )
+    if not resolved:
+        resolved = await asyncio.to_thread(
+            _resolve_threads_share_via_cdp_fetch_sync,
+            candidate,
+        )
     if resolved:
         logging.info(
             "Resolved Threads share URL via fast Chromium fetch: %s -> %s",
