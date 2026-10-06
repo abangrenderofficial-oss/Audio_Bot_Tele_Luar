@@ -1142,6 +1142,65 @@ function isThreadsShareAlias(value) {
   }
 }
 
+
+async function resolveThreadsShareViaRedirectChecker(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  const endpoint =
+    "https://api.domainee.dev/v1/tools/redirect-checker?url=" +
+    encodeURIComponent(mediaUrl);
+  try {
+    const response = await fetch(endpoint, {
+      headers: {
+        "accept": "application/json",
+        "user-agent": "AbangRender-MusicBot/1.0",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    const raw = await response.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch {}
+
+    const strings = [];
+    const walk = (value) => {
+      if (typeof value === "string") {
+        strings.push(value);
+      } else if (Array.isArray(value)) {
+        for (const item of value) walk(item);
+      } else if (value && typeof value === "object") {
+        for (const item of Object.values(value)) walk(item);
+      }
+    };
+    walk(data);
+
+    const canonical = strings.find((value) =>
+      /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i.test(value)
+    );
+    if (response.ok && canonical) {
+      const clean = canonical.match(
+        /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+      )?.[0];
+      if (clean) {
+        console.log(
+          `[SOCIAL-WORKER] threads redirect API resolved share -> ${clean}`
+        );
+        return clean;
+      }
+    }
+
+    console.warn(
+      `[SOCIAL-WORKER] threads redirect API miss status=${response.status} body=${raw.slice(0, 300)}`
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads redirect API failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaLinkExpander(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -1905,7 +1964,10 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     let effectiveMediaUrl = mediaUrl;
     if (source === "threads") {
       try {
-        effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
+        effectiveMediaUrl = await resolveThreadsShareViaRedirectChecker(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
+        }
         console.log("[SOCIAL-WORKER] threads ThreadsDL fallback start");
         threadsProvider = await fetchThreadsDlMedia(effectiveMediaUrl, prefix);
         providerRawPath = threadsProvider.filePath;
