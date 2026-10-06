@@ -63,6 +63,7 @@ from services.media.delivery import (
     send_audio_with_thumbnail,
 )
 from services.media.audio_flow import run_audio_flow
+from services.storage.music_cache import get_cached_social_audio, store_cached_social_audio
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
 from services.platforms import soundcloud_media as soundcloud_platform
 
@@ -111,14 +112,10 @@ soundcloud_service = SoundCloudService(OUTPUT_DIR)
 async def process_soundcloud(message: types.Message, direct_url: Optional[str] = None):
     status_message: Optional[types.Message] = None
     request_lease = None
-    try:
-        business_id = message.business_connection_id
-        show_service_status = business_id is None
-        if await should_skip_duplicate_business_message(
-            message, bot, service_name="SoundCloud", logger=logging
-        ):
-            return
+    business_id = getattr(message, "business_connection_id", None)
+    show_service_status = business_id is None
 
+    try:
         if direct_url:
             source_url = strip_soundcloud_url(direct_url)
         else:
@@ -128,6 +125,20 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 return
             source_url = strip_soundcloud_url(match.group(0))
 
+        chat_type_value = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
+        group_music_connected = False
+        if chat_type_value in {"group", "supergroup"}:
+            checker = getattr(db, "is_music_group_connected", None)
+            if not callable(checker) or not await checker(message.chat.id):
+                # Group auto-conversion is opt-in through /connectmusic.
+                return
+            group_music_connected = True
+
+        if await should_skip_duplicate_business_message(
+            message, bot, service_name="SoundCloud", logger=logging
+        ):
+            return
+
         request_lease = await claim_message_request(
             message, service="soundcloud", url=source_url
         )
@@ -136,11 +147,11 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
 
         logging.debug(
             "SoundCloud request: user_id=%s url=%s",
-            message.from_user.id,
+            message.from_user.id if message.from_user else 0,
             summarize_url_for_log(source_url),
         )
         await send_analytics(
-            user_id=message.from_user.id,
+            user_id=message.from_user.id if message.from_user else 0,
             chat_type=message.chat.type,
             action_name="soundcloud_audio",
         )
@@ -151,11 +162,113 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
         if show_service_status:
             status_message = await message.answer(bm.downloading_audio_status())
 
+        async def _remember_group_audio(
+            *,
+            file_id: str | None,
+            audio_message_id: int | None,
+            title: object = None,
+            performer: object = None,
+            duration: object = None,
+        ) -> None:
+            if not group_music_connected or not file_id or audio_message_id is None:
+                return
+            try:
+                parsed_duration = float(duration) if duration is not None else None
+            except (TypeError, ValueError):
+                parsed_duration = None
+            try:
+                await db.add_music_group_track(
+                    group_id=message.chat.id,
+                    added_by_user_id=(
+                        message.from_user.id if message.from_user else None
+                    ),
+                    service="soundcloud",
+                    source_url=source_url,
+                    title=(str(title) if title else None),
+                    performer=(str(performer) if performer else None),
+                    telegram_file_id=str(file_id),
+                    duration_seconds=parsed_duration,
+                    source_message_id=getattr(message, "message_id", None),
+                    audio_message_id=int(audio_message_id),
+                )
+            except Exception as exc:
+                logging.warning(
+                    "SoundCloud group playlist record failed: group=%s error=%s",
+                    message.chat.id,
+                    exc,
+                )
+
+        async def _reply_audio_with_group_playlist(**kwargs):
+            sent = await message.reply_audio(**kwargs)
+            audio = getattr(sent, "audio", None)
+            await _remember_group_audio(
+                file_id=getattr(audio, "file_id", None),
+                audio_message_id=getattr(sent, "message_id", None),
+                title=(
+                    kwargs.get("title")
+                    or getattr(audio, "title", None)
+                    or getattr(audio, "file_name", None)
+                ),
+                performer=(
+                    kwargs.get("performer")
+                    or getattr(audio, "performer", None)
+                ),
+                duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+            )
+            return sent
+
+        audio_sender = (
+            _reply_audio_with_group_playlist
+            if group_music_connected
+            else message.reply_audio
+        )
+
         cache_key = build_audio_cache_key(source_url)
         track: Optional[SoundCloudTrack] = None
 
         async def _edit_status(text: str) -> None:
             await safe_edit_text(status_message, text)
+
+        # Global persistent Telegram file_id cache. This survives Render
+        # restarts and lets repeated SoundCloud links return immediately.
+        remote_fast, remote_mp3 = await asyncio.gather(
+            get_cached_social_audio(
+                "soundcloud",
+                source_url,
+                variant="fast_original",
+            ),
+            get_cached_social_audio(
+                "soundcloud",
+                source_url,
+                variant="mp3_320",
+            ),
+        )
+        remote_cached = remote_fast or remote_mp3
+        if remote_cached:
+            await safe_edit_text(status_message, bm.uploading_status())
+            await send_chat_action_if_needed(
+                bot, message.chat.id, "upload_audio", business_id
+            )
+            await send_audio_with_thumbnail(
+                audio_sender,
+                audio=str(remote_cached["telegram_file_id"]),
+                title=str(remote_cached.get("title") or "SoundCloud Audio"),
+                performer=str(remote_cached.get("performer") or "SoundCloud"),
+                caption=bm.captions(
+                    user_settings.get("captions", "off"),
+                    None,
+                    bot_url,
+                ),
+                bot_url=bot_url,
+                duration=remote_cached.get("duration_seconds"),
+                parse_mode="HTML",
+            )
+            request_lease.mark_success()
+            await maybe_delete_user_message(
+                message,
+                user_settings.get("delete_message"),
+            )
+            return
 
         async def _send_cached(file_id: str):
             await safe_edit_text(status_message, bm.uploading_status())
@@ -163,9 +276,13 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 bot, message.chat.id, "upload_audio", business_id
             )
             return await send_audio_with_thumbnail(
-                message.reply_audio,
+                audio_sender,
                 audio=file_id,
-                caption=bm.captions(user_settings["captions"], None, bot_url),
+                caption=bm.captions(
+                    user_settings.get("captions", "off"),
+                    None,
+                    bot_url,
+                ),
                 bot_url=bot_url,
                 parse_mode="HTML",
             )
@@ -177,6 +294,67 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 await handle_download_error(message, business_id=business_id)
                 return False
             return True
+
+        if not await _fetch_track():
+            return
+
+        # Fast path: let Telegram fetch Cobalt's SoundCloud audio tunnel
+        # directly. This avoids writing/downloading the file on Render.
+        try:
+            await safe_edit_text(
+                status_message,
+                "🎧 SoundCloud • sedang sediakan audio...",
+            )
+            await send_chat_action_if_needed(
+                bot, message.chat.id, "upload_audio", business_id
+            )
+            sent_fast = await send_audio_with_thumbnail(
+                audio_sender,
+                audio=track.audio_url,
+                title=track.title,
+                performer=track.artist or None,
+                caption=bm.captions(
+                    user_settings.get("captions", "off"),
+                    None,
+                    bot_url,
+                ),
+                bot_url=bot_url,
+                duration=track.duration_seconds,
+                parse_mode="HTML",
+            )
+            sent_audio = getattr(sent_fast, "audio", None)
+            fast_file_id = getattr(sent_audio, "file_id", None)
+            if fast_file_id:
+                try:
+                    await store_cached_social_audio(
+                        "soundcloud",
+                        source_url,
+                        telegram_file_id=str(fast_file_id),
+                        variant="fast_original",
+                        title=track.title,
+                        performer=track.artist or "SoundCloud",
+                        duration_seconds=(
+                            float(track.duration_seconds)
+                            if track.duration_seconds
+                            else None
+                        ),
+                    )
+                except Exception as cache_error:
+                    logging.warning(
+                        "SoundCloud persistent fast cache store failed: %s",
+                        cache_error,
+                    )
+            request_lease.mark_success()
+            await maybe_delete_user_message(
+                message,
+                user_settings.get("delete_message"),
+            )
+            return
+        except Exception as exc:
+            logging.warning(
+                "SoundCloud direct Telegram path failed; using download fallback: %s",
+                exc,
+            )
 
         async def _download_audio():
             timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -196,7 +374,7 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             audio_metrics = await soundcloud_service.download_media(
                 track.audio_url,
                 audio_name,
-                user_id=message.from_user.id,
+                user_id=message.from_user.id if message.from_user else None,
                 chat_id=message.chat.id,
                 request_id=request_id,
                 on_progress=on_progress,
@@ -229,14 +407,18 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 else bot_avatar
             )
             return await send_audio_with_thumbnail(
-                message.reply_audio,
+                audio_sender,
                 audio=FSInputFile(
                     path,
                     filename=build_audio_filename(track.title),
                 ),
                 title=track.title,
                 performer=track.artist or None,
-                caption=bm.captions(user_settings["captions"], None, bot_url),
+                caption=bm.captions(
+                    user_settings.get("captions", "off"),
+                    None,
+                    bot_url,
+                ),
                 audio_path=path,
                 bot_avatar=audio_thumbnail,
                 bot_url=bot_url,
@@ -245,8 +427,31 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 parse_mode="HTML",
             )
 
-        async def _after_send(_result):
-            await maybe_delete_user_message(message, user_settings["delete_message"])
+        async def _after_send(result):
+            if result and result.file_id:
+                try:
+                    await store_cached_social_audio(
+                        "soundcloud",
+                        source_url,
+                        telegram_file_id=str(result.file_id),
+                        variant="mp3_320",
+                        title=track.title,
+                        performer=track.artist or "SoundCloud",
+                        duration_seconds=(
+                            float(track.duration_seconds)
+                            if track.duration_seconds
+                            else None
+                        ),
+                    )
+                except Exception as cache_error:
+                    logging.warning(
+                        "SoundCloud MP3 persistent cache store failed: %s",
+                        cache_error,
+                    )
+            await maybe_delete_user_message(
+                message,
+                user_settings.get("delete_message"),
+            )
             request_lease.mark_success()
 
         async def _on_missing_audio():
@@ -264,7 +469,7 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             cache_key=cache_key,
             db_service=db,
             send_cached=_send_cached,
-            fetch_metadata=_fetch_track,
+            fetch_metadata=None,
             download_audio=_download_audio,
             on_missing_audio=_on_missing_audio,
             max_file_size=MAX_FILE_SIZE,
@@ -278,17 +483,17 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             chat_type=getattr(message.chat, "type", None),
             service="soundcloud",
             url=source_url,
+            title=track.title,
             on_after_send=_after_send,
         )
 
     except (DownloadRateLimitError, DownloadQueueBusyError) as exc:
-        show_service_status = message.business_connection_id is None
         await handle_download_backpressure_error(
             exc, message=message, show_service_status=show_service_status
         )
     except Exception as exc:
         logging.exception("Error processing SoundCloud request: error=%s", exc)
-        await handle_download_error(message, business_id=message.business_connection_id)
+        await handle_download_error(message, business_id=business_id)
     finally:
         if request_lease is not None:
             request_lease.finish()
