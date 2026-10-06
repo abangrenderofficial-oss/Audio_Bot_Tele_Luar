@@ -31,6 +31,11 @@ from yt_dlp.utils import (
 from yt_dlp.utils.traversal import traverse_obj
 
 _GOOGLEBOT_UA = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
+_BROWSER_UA = (
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) '
+    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 '
+    'Mobile/15E148 Safari/604.1'
+)
 _MEDIA_KEYS = {'video_versions', 'video_dash_manifest', 'image_versions2', 'carousel_media'}
 # media_type values seen in the post JSON.
 _MEDIA_TYPE_IMAGE = 1
@@ -170,9 +175,56 @@ class ThreadsIE(InfoExtractor):
                 })),
         }
 
+    def _resolve_share_url(self, url, video_id):
+        """Resolve /share/<token>/ using an anonymous non-crawler request first."""
+        attempts = (
+            {
+                'User-Agent': _BROWSER_UA,
+                'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            {
+                'User-Agent': '',
+                'Accept': '*/*',
+            },
+        )
+        for idx, headers in enumerate(attempts, start=1):
+            try:
+                webpage, urlh = self._download_webpage_handle(
+                    url, video_id,
+                    note=f'Resolving Threads share URL (attempt {idx})',
+                    headers=headers,
+                    fatal=False)
+            except Exception:
+                continue
+
+            final_url = getattr(urlh, 'url', None) or url
+            if re.match(
+                    r'https?://(?:www\\.)?threads\\.(?:com|net)/(?:@[^/?#]+/post|t)/[\\w-]+',
+                    final_url):
+                self.to_screen(f'Resolved share URL to {final_url}')
+                return final_url
+
+            normalized = (webpage or '').replace('\\\\/', '/')
+            match = re.search(
+                r'https?://(?:www\\.)?threads\\.(?:com|net)/(?:@[^"\\s<>/]+/post|t)/[\\w-]+',
+                normalized)
+            if match:
+                resolved = match.group(0)
+                self.to_screen(f'Resolved share URL from page data to {resolved}')
+                return resolved
+        return url
+
     def _real_extract(self, url):
         mobj = self._match_valid_url(url)
         matched_id = mobj.group('id') or mobj.group('share')
+
+        if mobj.group('share'):
+            resolved_url = self._resolve_share_url(url, matched_id)
+            if resolved_url != url:
+                url = resolved_url
+                mobj = self._match_valid_url(url)
+                matched_id = mobj.group('id') or matched_id
 
         webpage = self._download_webpage(
             url, matched_id, note='Downloading post webpage (crawler UA)',
