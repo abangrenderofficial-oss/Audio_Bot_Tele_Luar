@@ -1129,6 +1129,57 @@ function socialReadMeta(filePath, fallback = "") {
   }
 }
 
+function isThreadsShareAlias(value) {
+  try {
+    const u = new URL(String(value || ""));
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    return (
+      (host === "threads.com" || host === "threads.net") &&
+      /^\/share\/[A-Za-z0-9_-]+\/?$/.test(u.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function resolveThreadsShareViaLinkExpander(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  const endpoint =
+    "https://www.linkexpander.com/?url=" + encodeURIComponent(mediaUrl);
+  try {
+    const response = await fetch(endpoint, {
+      redirect: "follow",
+      headers: {
+        "accept": "text/plain,*/*;q=0.8",
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    const raw = String(await response.text()).trim();
+    const match = raw.match(
+      /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+    );
+    if (response.ok && match) {
+      console.log(
+        `[SOCIAL-WORKER] threads LinkExpander resolved share -> ${match[0]}`
+      );
+      return match[0];
+    }
+    console.warn(
+      `[SOCIAL-WORKER] threads LinkExpander miss status=${response.status} body=${raw.slice(0, 300)}`
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads LinkExpander failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+  return mediaUrl;
+}
+
 async function fetchThreadsDlMedia(mediaUrl, prefix) {
   const apiUrl = "https://www.threadsdl.app/api/threads";
   const proxyBase = "https://www.threadsdl.app/api/proxy";
@@ -1399,10 +1450,12 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     let threadsProvider = null;
     let providerRawPath = null;
 
+    let effectiveMediaUrl = mediaUrl;
     if (source === "threads") {
       try {
+        effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
         console.log("[SOCIAL-WORKER] threads ThreadsDL fallback start");
-        threadsProvider = await fetchThreadsDlMedia(mediaUrl, prefix);
+        threadsProvider = await fetchThreadsDlMedia(effectiveMediaUrl, prefix);
         providerRawPath = threadsProvider.filePath;
       } catch (error) {
         console.warn(
@@ -1417,7 +1470,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       console.log(`[SOCIAL-WORKER] ${source} direct download start`);
       let directError = null;
       try {
-        await runYoutubeWorkerProcess([...baseArgs, mediaUrl], 120000);
+        await runYoutubeWorkerProcess([...baseArgs, effectiveMediaUrl], 120000);
       } catch (error) {
         directError = error;
         console.warn(
@@ -1430,7 +1483,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       if (directError) {
         console.log(`[SOCIAL-WORKER] ${source} WARP fallback start`);
         await runYoutubeWorkerProcess(
-          [...baseArgs, "--proxy", YOUTUBE_WORKER_PROXY, mediaUrl],
+          [...baseArgs, "--proxy", YOUTUBE_WORKER_PROXY, effectiveMediaUrl],
           120000
         );
       }
