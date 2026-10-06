@@ -79,10 +79,59 @@ async def _connected(message: types.Message) -> bool:
     return bool(await checker(message.chat.id))
 
 
+async def _remember_cleanup_message(
+    group_id: int,
+    message_id: object,
+    *,
+    kind: str,
+) -> None:
+    recorder = getattr(db, "add_music_group_cleanup_message", None)
+    if not callable(recorder) or message_id is None:
+        return
+    try:
+        await recorder(
+            group_id=int(group_id),
+            message_id=int(message_id),
+            kind=kind,
+        )
+    except Exception as exc:
+        logging.warning(
+            "Cleanup message tracking failed: group=%s message=%s kind=%s error=%s",
+            group_id,
+            message_id,
+            kind,
+            exc,
+        )
+
+
+async def _remember_command(message: types.Message) -> None:
+    await _remember_cleanup_message(
+        message.chat.id,
+        getattr(message, "message_id", None),
+        kind="command",
+    )
+
+
+async def _reply_tracked(
+    message: types.Message,
+    *args,
+    kind: str = "bot_text",
+    **kwargs,
+):
+    sent = await message.reply(*args, **kwargs)
+    await _remember_cleanup_message(
+        message.chat.id,
+        getattr(sent, "message_id", None),
+        kind=kind,
+    )
+    return sent
+
+
 @router.message(Command("connectmusic"))
 async def connect_music_group(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _require_group_admin(message):
         return
 
@@ -93,7 +142,7 @@ async def connect_music_group(message: types.Message) -> None:
         connected_by_user_id=(message.from_user.id if message.from_user else None),
     )
     count = await db.get_music_group_track_count(message.chat.id)
-    await message.reply(
+    await _reply_tracked(message, 
         "🎵 <b>Music Group connected.</b>\n\n"
         "Mulai sekarang ahli group boleh hantar link YouTube / TikTok / Instagram / "
         "Threads / X dan bot akan hantar audio terus dalam group.\n\n"
@@ -106,8 +155,9 @@ async def connect_music_group(message: types.Message) -> None:
 async def show_group_playlist(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _connected(message):
-        await message.reply("Music Group belum connected. Guna /connectmusic dulu.")
+        await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
 
     total = await db.get_music_group_track_count(message.chat.id)
@@ -118,7 +168,7 @@ async def show_group_playlist(message: types.Message) -> None:
         )
     )
     if not tracks:
-        await message.reply(
+        await _reply_tracked(message, 
             "🎵 Playlist group masih kosong. Hantar link lagu dulu dan bot akan kumpulkan."
         )
         return
@@ -144,22 +194,23 @@ async def show_group_playlist(message: types.Message) -> None:
     lines.append(
         "\n▶️ /playall — hantar queue ke native Telegram music player."
     )
-    await message.reply("\n".join(lines), parse_mode="HTML")
+    await _reply_tracked(message, "\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("clearlink"))
 async def clear_music_links(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _require_group_admin(message):
         return
     if not await _connected(message):
-        await message.reply("Music Group belum connected. Guna /connectmusic dulu.")
+        await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
 
     message_ids = await db.get_music_group_source_message_ids(message.chat.id)
     if not message_ids:
-        await message.reply("✅ Tak ada sisa link yang perlu dibuang.")
+        await _reply_tracked(message, "✅ Tak ada sisa link yang perlu dibuang.")
         return
 
     deleted: list[int] = []
@@ -181,7 +232,73 @@ async def clear_music_links(message: types.Message) -> None:
             f"\nTak dapat delete: <b>{failed}</b>. "
             "Pastikan bot jadi admin dan ada permission Delete Messages."
         )
-    await message.reply(text, parse_mode="HTML")
+    await _reply_tracked(message, text, parse_mode="HTML")
+
+
+@router.message(Command("clearall"))
+async def clear_all_group_text(message: types.Message) -> None:
+    if not await _require_group(message):
+        return
+    if not await _require_group_admin(message):
+        return
+    if not await _connected(message):
+        await _reply_tracked(
+            message,
+            "Music Group belum connected. Guna /connectmusic dulu.",
+        )
+        return
+
+    tracks = list(await db.list_music_group_tracks(message.chat.id))
+    audio_message_ids = {
+        int(track.audio_message_id)
+        for track in tracks
+        if getattr(track, "audio_message_id", None) is not None
+    }
+
+    cleanup_getter = getattr(db, "get_music_group_cleanup_message_ids", None)
+    tracked_ids = set(
+        await cleanup_getter(message.chat.id)
+        if callable(cleanup_getter)
+        else []
+    )
+    source_ids = set(await db.get_music_group_source_message_ids(message.chat.id))
+    target_ids = tracked_ids | source_ids | {int(message.message_id)}
+    target_ids.difference_update(audio_message_ids)
+
+    deleted: list[int] = []
+    failed: list[int] = []
+    for message_id in sorted(target_ids, reverse=True):
+        try:
+            await bot.delete_message(message.chat.id, message_id)
+            deleted.append(message_id)
+        except Exception as exc:
+            failed.append(message_id)
+            logging.debug(
+                "Clearall delete failed: group=%s message=%s error=%s",
+                message.chat.id,
+                message_id,
+                exc,
+            )
+        await asyncio.sleep(0.03)
+
+    deleted_source_ids = sorted(source_ids.intersection(deleted))
+    if deleted_source_ids:
+        await db.mark_music_group_links_cleared(
+            message.chat.id,
+            deleted_source_ids,
+        )
+
+    cleanup_remover = getattr(db, "remove_music_group_cleanup_messages", None)
+    if callable(cleanup_remover) and deleted:
+        await cleanup_remover(message.chat.id, deleted)
+
+    logging.info(
+        "Group clearall complete: group=%s deleted=%s failed=%s audio_preserved=%s",
+        message.chat.id,
+        len(deleted),
+        len(failed),
+        len(audio_message_ids),
+    )
 
 
 async def _send_audio_batch(
@@ -236,18 +353,19 @@ async def _send_audio_batch(
 async def play_all_group_music(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _connected(message):
-        await message.reply("Music Group belum connected. Guna /connectmusic dulu.")
+        await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
 
     tracks = list(await db.list_music_group_tracks(message.chat.id))
     if not tracks:
-        await message.reply(
+        await _reply_tracked(message, 
             "Playlist group masih kosong. Hantar link lagu dulu dan bot akan kumpulkan."
         )
         return
 
-    status = await message.reply(
+    status = await _reply_tracked(message, 
         f"▶️ Susun playlist dari awal • {len(tracks)} track..."
     )
     sent_count = 0
@@ -315,13 +433,14 @@ async def _youtube_search(query: str, limit: int = 5) -> list[dict[str, object]]
 async def search_music(message: types.Message, command: CommandObject) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _connected(message):
-        await message.reply("Music Group belum connected. Guna /connectmusic dulu.")
+        await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
 
     query = str(command.args or "").strip()
     if not query:
-        await message.reply(
+        await _reply_tracked(message, 
             "🔎 Guna <code>/search tajuk lagu</code>\n"
             "Contoh: <code>/search Sinaran Sheila Majid</code>",
             parse_mode="HTML",
@@ -341,10 +460,10 @@ async def search_music(message: types.Message, command: CommandObject) -> None:
                 + (f" — {performer}" if performer else "")
             )
         lines.append("\nGuna /playall untuk main playlist dari awal.")
-        await message.reply("\n".join(lines), parse_mode="HTML")
+        await _reply_tracked(message, "\n".join(lines), parse_mode="HTML")
         return
 
-    status = await message.reply("🔎 Mencari lagu...")
+    status = await _reply_tracked(message, "🔎 Mencari lagu...")
     results = await _youtube_search(query)
     if not results:
         try:
@@ -381,7 +500,9 @@ async def search_music(message: types.Message, command: CommandObject) -> None:
 async def play_sync_info(message: types.Message) -> None:
     if not await _require_group(message):
         return
-    await message.reply(
+    await _remember_command(message)
+    await _reply_tracked(
+        message,
         "🎧 <b>PlaySync</b> perlukan player bersama (Music Room / Mini App). "
         "Telegram tak benarkan bot kawal Play/Pause/Skip pada player Telegram "
         "di telefon ahli lain secara remote.\n\n"
@@ -396,7 +517,9 @@ async def play_sync_info(message: types.Message) -> None:
 async def stop_sync_info(message: types.Message) -> None:
     if not await _require_group(message):
         return
-    await message.reply(
+    await _remember_command(message)
+    await _reply_tracked(
+        message,
         "⏹ PlaySync native belum aktif. Bila Music Room siap, /stopsync akan "
         "keluarkan user itu sahaja daripada sesi sync tanpa ganggu playlist group."
     )
