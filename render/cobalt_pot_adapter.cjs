@@ -1762,6 +1762,25 @@ function extractDlpandaDownloadCandidates(html) {
     }
   }
 
+  for (const match of html.matchAll(/https?:\\/\\/[^\\s"'<>]+/gi)) {
+    const url = decodeHtmlAttr(match[0]).replace(/[),.;\\]}]+$/g, "");
+    if (seen.has(url)) continue;
+    const lower = url.toLowerCase();
+    if (!/\\.(?:mp4|mov|webm|m4a|mp3|aac)(?:[?#]|$)|video|audio|media|download|bridge|proxy/.test(lower)) {
+      continue;
+    }
+    seen.add(url);
+    const kind = /\\.(?:m4a|mp3|aac)(?:[?#]|$)|audio|music|sound/.test(lower)
+      ? "audio"
+      : "video";
+    candidates.push({
+      url,
+      kind,
+      score: 1200,
+      pathHint: "dlpanda.raw-url",
+    });
+  }
+
   return candidates.sort((a, b) => b.score - a.score);
 }
 
