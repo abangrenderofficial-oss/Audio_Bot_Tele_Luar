@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -124,6 +127,57 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return str(response.url), await response.text()
 
 
+def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
+    """Execute the share wrapper in Chromium so client-side navigation can finish."""
+    binary = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    if not binary:
+        logging.warning("Threads Chromium fallback unavailable: browser binary not found")
+        return None
+
+    try:
+        completed = subprocess.run(
+            [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--no-first-run",
+                "--virtual-time-budget=7000",
+                "--dump-dom",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=22,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.warning("Threads Chromium fallback failed to run: error=%s", exc)
+        return None
+
+    page = completed.stdout or ""
+    resolved = _extract_threads_post_url_from_html(page)
+    if resolved:
+        return resolved
+
+    logging.warning(
+        "Threads Chromium fallback did not expose canonical post: rc=%s bytes=%s",
+        completed.returncode,
+        len(page),
+    )
+    return None
+
+
 async def fetch_fxthreads_canonical(share_id: str) -> str | None:
     """Fallback resolver for Threads /share/ links when Meta returns the login shell.
 
@@ -227,6 +281,18 @@ async def resolve_threads_url(
                 resolved_proxy,
             )
             return resolved_proxy
+
+    chromium_resolved = await asyncio.to_thread(
+        _resolve_threads_share_with_chromium_sync,
+        candidate,
+    )
+    if chromium_resolved:
+        logging.info(
+            "Resolved Threads share URL via Chromium fallback: %s -> %s",
+            candidate,
+            chromium_resolved,
+        )
+        return chromium_resolved
 
     title_match = re.search(r"<title[^>]*>(.*?)</title>", page or "", re.IGNORECASE | re.DOTALL)
     canonical_match = re.search(
