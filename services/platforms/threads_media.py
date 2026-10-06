@@ -999,6 +999,12 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
         logging.warning("Threads real-extension resolver unavailable: browser binary not found")
         return None
 
+    # Headless Chromium does not fully mirror extension networking on Debian;
+    # run the extension in a normal Chromium window under Xvfb when available.
+    # This matches the working desktop-extension execution model while staying
+    # entirely inside the Render Music Bot container.
+    xvfb_run = shutil.which("xvfb-run")
+
     extension_id = "hehokicokbgajpanjcajhmflaennnmdj"
     extension_key = (
         "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwsulpvef7Tggdw39ft9kn/"
@@ -1080,9 +1086,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 handle.write(background_script)
 
             resolver_url = f"chrome-extension://{extension_id}/resolver.html"
-            command = [
-                binary,
-                "--headless=new",
+            command = (
+                [xvfb_run, "-a", binary]
+                if xvfb_run
+                else [binary, "--headless=new"]
+            ) + [
                 "--no-sandbox",
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
