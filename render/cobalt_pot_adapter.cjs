@@ -1613,6 +1613,158 @@ async function downloadThreadsHybridAsset(
   throw new Error(lastError);
 }
 
+async function fetchVxThreadsMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const original = new URL(mediaUrl);
+  const telegramUa = "Mozilla/5.0 (compatible; TelegramBot)";
+
+  const metaValue = (html, property) => {
+    const escaped = property.replace(/[.*+?^{}()|[\]\\]/g, "\\async function fetchThreadsDlMedia(mediaUrl, prefix) {");
+    const a = html.match(
+      new RegExp(
+        '<meta[^>]+(?:property|name)=["\\\']' + escaped +
+        '["\\\'][^>]+content=["\\\']([^"\\\']+)["\\\']',
+        "i"
+      )
+    );
+    if (a?.[1]) return a[1];
+    const b = html.match(
+      new RegExp(
+        '<meta[^>]+content=["\\\']([^"\\\']+)["\\\'][^>]+(?:property|name)=["\\\']' +
+        escaped + '["\\\']',
+        "i"
+      )
+    );
+    return b?.[1] || "";
+  };
+
+  const clean = (value) =>
+    String(value || "")
+      .replace(/&amp;/gi, "&")
+      .replace(/&#0?64;/gi, "@")
+      .replace(/\\u0026/g, "&")
+      .replace(/\\\//g, "/")
+      .trim();
+
+  const pages = [];
+  pages.push("https://vxthreads.com" + original.pathname);
+
+  const loadPage = async (url) => {
+    const response = await fetch(url, {
+      redirect: "follow",
+      headers: {
+        "user-agent": telegramUa,
+        "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    return { response, html: await response.text() };
+  };
+
+  let first = null;
+  try {
+    first = await loadPage(pages[0]);
+  } catch (error) {
+    throw new Error(
+      "vxThreads share fetch failed: " +
+      String(error?.message || error).slice(0, 300)
+    );
+  }
+
+  const canonicalRaw =
+    metaValue(first.html, "og:url") ||
+    (first.html.match(
+      /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i
+    ) || [,""])[1] ||
+    first.response.url;
+  const canonical = clean(canonicalRaw);
+
+  try {
+    const cu = new URL(canonical);
+    if (
+      /(^|\.)threads\.(?:com|net)$/i.test(cu.hostname) &&
+      /^\/@[^/]+\/post\/[A-Za-z0-9_-]+\/?$/i.test(cu.pathname)
+    ) {
+      const canonicalMirror = "https://vxthreads.com" + cu.pathname;
+      if (!pages.includes(canonicalMirror)) pages.push(canonicalMirror);
+    } else if (
+      /(^|\.)vxthreads\.com$/i.test(cu.hostname) &&
+      /^\/@[^/]+\/post\/[A-Za-z0-9_-]+\/?$/i.test(cu.pathname)
+    ) {
+      const canonicalMirror = "https://vxthreads.com" + cu.pathname;
+      if (!pages.includes(canonicalMirror)) pages.push(canonicalMirror);
+    }
+  } catch {}
+
+  const loaded = [{ url: pages[0], ...first }];
+  if (pages.length > 1) {
+    try {
+      loaded.push({ url: pages[1], ...(await loadPage(pages[1])) });
+    } catch {}
+  }
+
+  let lastError = "vxThreads returned no media";
+  for (const page of loaded) {
+    const html = page.html;
+    const candidates = [];
+    const seen = new Set();
+    const add = (value, kind, score) => {
+      const url = clean(value);
+      if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+      seen.add(url);
+      candidates.push({ url, kind, score });
+    };
+
+    for (const key of [
+      "og:video:secure_url",
+      "og:video",
+      "twitter:player:stream",
+    ]) {
+      add(metaValue(html, key), "video", 2000);
+    }
+    for (const key of ["og:audio:secure_url", "og:audio"]) {
+      add(metaValue(html, key), "audio", 1900);
+    }
+    for (const match of html.matchAll(/https?:[^\s"'<>]+/gi)) {
+      const raw = clean(match[0]).replace(/[),.;}]+$/g, "");
+      if (/\.mp4(?:[?#]|$)|cdninstagram|fbcdn/i.test(raw)) {
+        add(raw, "video", 1500);
+      } else if (/\.(?:m4a|mp3|aac|ogg|opus)(?:[?#]|$)/i.test(raw)) {
+        add(raw, "audio", 1400);
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    for (const candidate of candidates.slice(0, 10)) {
+      try {
+        const downloaded = await downloadThreadsHybridAsset(
+          candidate,
+          prefix,
+          "",
+          { referer: page.url }
+        );
+        const title = clean(metaValue(html, "og:title"));
+        console.log(
+          `[SOCIAL-WORKER] threads vxThreads ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+        );
+        return {
+          filePath: downloaded.filePath,
+          metadata: {
+            title: title || (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+            performer: "Threads",
+            duration: null,
+          },
+          mediaKind: candidate.kind,
+        };
+      } catch (error) {
+        lastError = String(error?.message || error).slice(0, 400);
+      }
+    }
+  }
+
+  throw new Error(lastError);
+}
+
 async function fetchThreadsDlMedia(mediaUrl, prefix) {
   const apiUrl = "https://www.threadsdl.app/api/threads";
   const proxyBase = "https://www.threadsdl.app/api/proxy";
@@ -2370,31 +2522,29 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     let effectiveMediaUrl = mediaUrl;
     if (source === "threads") {
       const shareAlias = isThreadsShareAlias(mediaUrl);
+
+      // Keep the hot path short. Render's current IP gets a generic Threads
+      // shell for /share/ aliases, so avoid the old multi-attempt crawler
+      // waterfall. Try the preview UA once, then media providers directly.
       if (shareAlias) {
-        effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaPlainClient(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaCrawler(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
-        }
+        effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
       }
 
       const providers = effectiveMediaUrl !== mediaUrl
         ? [
+            ["vxThreads", fetchVxThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
             ["DLPanda", fetchDlpandaThreadsMedia],
           ]
         : shareAlias
           ? [
+              ["vxThreads", fetchVxThreadsMedia],
               ["DLPanda", fetchDlpandaThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
             ]
           : [
               ["ThreadsDL", fetchThreadsDlMedia],
+              ["vxThreads", fetchVxThreadsMedia],
               ["DLPanda", fetchDlpandaThreadsMedia],
             ];
 
@@ -2410,15 +2560,6 @@ async function runSocialWorkerAudio(mediaUrl, source) {
             String(error?.message || error).slice(0, 1200)
           );
           clearOutputs();
-        }
-      }
-
-      // Only canonicalize if both direct media providers failed. This keeps
-      // normal Threads requests fast while retaining yt-dlp as a final fallback.
-      if (!providerRawPath && effectiveMediaUrl === mediaUrl) {
-        effectiveMediaUrl = await resolveThreadsShareViaRedirectChecker(mediaUrl);
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
         }
       }
     }
