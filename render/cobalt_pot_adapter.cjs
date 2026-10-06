@@ -1188,6 +1188,45 @@ async function resolveThreadsShareViaTelegramBot(mediaUrl) {
   return mediaUrl;
 }
 
+async function resolveThreadsShareViaPlainClient(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  for (const userAgent of ["curl/8.0", "Wget/1.21.4", "python-urllib/3.11"]) {
+    try {
+      const response = await fetch(mediaUrl, {
+        redirect: "manual",
+        headers: { "user-agent": userAgent, "accept": "*/*" },
+        signal: AbortSignal.timeout(8000),
+      });
+      const location = String(response.headers.get("location") || "").trim();
+      if (location) {
+        const absolute = new URL(location, mediaUrl).toString();
+        const match = absolute.match(
+          /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+        );
+        if (match) {
+          console.log(
+            "[SOCIAL-WORKER] threads plain-client resolved share ua=" +
+            userAgent + " -> " + match[0]
+          );
+          return match[0];
+        }
+      }
+      console.log(
+        "[SOCIAL-WORKER] threads plain-client miss ua=" + userAgent +
+        " status=" + response.status +
+        " location=" + (location.slice(0, 180) || "-")
+      );
+    } catch (error) {
+      console.warn(
+        "[SOCIAL-WORKER] threads plain-client failed ua=" + userAgent + ":",
+        String(error?.message || error).slice(0, 300)
+      );
+    }
+  }
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaRedirectChecker(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -2234,7 +2273,10 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     if (source === "threads") {
       const shareAlias = isThreadsShareAlias(mediaUrl);
       if (shareAlias) {
-        effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+        effectiveMediaUrl = await resolveThreadsShareViaPlainClient(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+        }
       }
 
       const providers = effectiveMediaUrl !== mediaUrl
