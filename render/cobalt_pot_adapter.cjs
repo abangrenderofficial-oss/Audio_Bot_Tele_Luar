@@ -1728,6 +1728,25 @@ async function probeDlpandaThreadsAssets(mediaUrl) {
       signal: AbortSignal.timeout(15000),
     });
     const html = await response.text();
+
+    const formMatch = html.match(/<form[^>]*data-download-form[^>]*>[\\s\\S]*?<\\/form>/i);
+    if (formMatch) {
+      const formHtml = formMatch[0];
+      const tag = (formHtml.match(/^<form[^>]*>/i) || [""])[0];
+      const action = (tag.match(/\\saction=["']([^"']*)["']/i) || [,""])[1];
+      const method = (tag.match(/\\smethod=["']([^"']*)["']/i) || [,"GET"])[1];
+      const inputs = [...formHtml.matchAll(/<input\\b[^>]*>/gi)].map((match) => {
+        const input = match[0];
+        const name = (input.match(/\\sname=["']([^"']+)["']/i) || [,""])[1];
+        const type = (input.match(/\\stype=["']([^"']+)["']/i) || [,"text"])[1];
+        const value = (input.match(/\\svalue=["']([^"']*)["']/i) || [,""])[1];
+        return { name, type, value: /token|csrf|turnstile/i.test(name) ? (value ? "[present]" : "") : value };
+      }).filter((item) => item.name);
+      console.log(
+        `[DLPANDA-FORM] action=${action || "-"} method=${method || "-"} tag=${tag.slice(0,1200)} inputs=${JSON.stringify(inputs).slice(0,5000)}`
+      );
+    }
+
     const scriptSources = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)]
       .map((match) => {
         try { return new URL(match[1], pageUrl).toString(); } catch { return ""; }
