@@ -406,6 +406,52 @@ async def resolve_threads_share_via_bulk_route(
     return None
 
 
+async def resolve_threads_share_via_fixembed(url: str) -> str | None:
+    """Use FixEmbed's Threads resolver when Meta blocks this server's share redirect."""
+    session = await get_http_session()
+    try:
+        async with session.get(
+            "https://fixembed.app/api/embed",
+            params={"url": url},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "AbangRender-MusicBot/1.0",
+            },
+            allow_redirects=True,
+            timeout=12,
+        ) as response:
+            if response.status != 200:
+                logging.info(
+                    "FixEmbed Threads resolver returned HTTP %s",
+                    response.status,
+                )
+                return None
+            payload = await response.json(content_type=None)
+    except Exception as exc:
+        logging.info("FixEmbed Threads resolver failed: error=%s", exc)
+        return None
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    if str(payload.get("platform") or "").lower() != "threads":
+        return None
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    resolved = strip_threads_url(str(data.get("url") or "").strip())
+    if extract_threads_post_code(resolved):
+        logging.info(
+            "Resolved Threads share URL via FixEmbed: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    return None
+
+
 async def resolve_threads_share_via_crawlers(url: str) -> str | None:
     """Try link-preview crawler UAs; Threads often serves them richer share metadata."""
     session = await get_http_session()
@@ -683,6 +729,10 @@ async def resolve_threads_url(
     )
     if bulk_resolved:
         return bulk_resolved
+
+    fixembed_resolved = await resolve_threads_share_via_fixembed(candidate)
+    if fixembed_resolved:
+        return fixembed_resolved
 
     crawler_resolved = await resolve_threads_share_via_crawlers(candidate)
     if crawler_resolved:
