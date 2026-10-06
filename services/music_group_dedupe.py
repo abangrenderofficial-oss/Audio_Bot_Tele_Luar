@@ -142,3 +142,35 @@ def dedupe_music_group_tracks(
         seen.update(keys)
 
     return kept, duplicates
+
+
+def duplicate_keeper_message_id(
+    tracks: Iterable[Any],
+    *,
+    candidate_audio_message_id: int,
+    service: object,
+    source_url: object,
+    title: object = None,
+    performer: object = None,
+    telegram_file_id: object = None,
+) -> int:
+    candidate_id = int(candidate_audio_message_id)
+    candidate_keys = track_identity_keys(
+        service=service,
+        source_url=source_url,
+        title=title,
+        performer=performer,
+        telegram_file_id=telegram_file_id,
+    )
+    if not candidate_keys:
+        return candidate_id
+
+    matching_ids = [candidate_id]
+    for track in tracks:
+        audio_message_id = getattr(track, "audio_message_id", None)
+        if audio_message_id is None:
+            continue
+        if candidate_keys.intersection(identity_keys_for_track(track)):
+            matching_ids.append(int(audio_message_id))
+
+    return min(matching_ids)
