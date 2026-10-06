@@ -283,7 +283,7 @@ class MemoryDataBase:
         tracks.append(row)
         return row
 
-    async def list_music_group_tracks(
+    async def list_music_group_tracks_raw(
         self,
         group_id: int,
         *,
@@ -298,18 +298,28 @@ class MemoryDataBase:
             remote = await list_remote_music_group_tracks(gid, limit=limit)
             if remote is not None:
                 rows = [SimpleNamespace(**item) for item in remote]
-                rows, _duplicates = dedupe_music_group_tracks(rows)
-                if limit is not None:
-                    rows = rows[: max(1, int(limit))]
-                else:
+                if limit is None:
                     self._music_tracks[gid] = list(rows)
                 return rows
         except Exception:
             pass
 
-        rows, _duplicates = dedupe_music_group_tracks(
-            self._music_tracks.get(gid, [])
+        rows = list(self._music_tracks.get(gid, []))
+        if limit is not None:
+            rows = rows[: max(1, int(limit))]
+        return rows
+
+    async def list_music_group_tracks(
+        self,
+        group_id: int,
+        *,
+        limit: int | None = None,
+    ) -> list[Any]:
+        rows = await self.list_music_group_tracks_raw(
+            int(group_id),
+            limit=None,
         )
+        rows, _duplicates = dedupe_music_group_tracks(rows)
         if limit is not None:
             rows = rows[: max(1, int(limit))]
         return rows
