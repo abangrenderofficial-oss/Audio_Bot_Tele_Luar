@@ -18,7 +18,7 @@ _SERVICE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "threads",
         re.compile(
-            r"(https?://(?:www\.)?threads\.(?:com|net)/@[A-Za-z0-9._-]+/post/[A-Za-z0-9_-]+)",
+            r"(https?://(?:www\.)?threads\.(?:com|net)/(?:@[A-Za-z0-9._-]+/post/[A-Za-z0-9_-]+|share/[A-Za-z0-9_-]+)\S*)",
             re.IGNORECASE,
         ),
     ),
