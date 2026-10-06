@@ -5,6 +5,7 @@ from typing import Sequence
 from sqlalchemy import delete, func, or_, select, update
 
 from services.logger import logger as logging
+from services.music_group_dedupe import dedupe_music_group_tracks
 from services.storage.models import MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
 
 logging = logging.bind(service="db_group_music")
@@ -115,7 +116,10 @@ class MusicGroupRepositoryMixin:
             if limit is not None:
                 stmt = stmt.limit(max(1, int(limit)))
             result = await session.execute(stmt)
-            return result.scalars().all()
+            rows, _duplicates = dedupe_music_group_tracks(result.scalars().all())
+            if limit is not None:
+                rows = rows[: max(1, int(limit))]
+            return rows
 
     async def search_music_group_tracks(
         self,
@@ -140,7 +144,8 @@ class MusicGroupRepositoryMixin:
                 .order_by(MusicGroupTrack.created_at.asc(), MusicGroupTrack.id.asc())
                 .limit(max(1, min(int(limit), 25)))
             )
-            return result.scalars().all()
+            rows, _duplicates = dedupe_music_group_tracks(result.scalars().all())
+            return rows[: max(1, min(int(limit), 25))]
 
     async def get_music_group_source_message_ids(
         self,
@@ -178,13 +183,8 @@ class MusicGroupRepositoryMixin:
                 )
 
     async def get_music_group_track_count(self, group_id: int) -> int:
-        async with self.SessionLocal() as session:
-            result = await session.execute(
-                select(func.count(MusicGroupTrack.id)).where(
-                    MusicGroupTrack.group_id == int(group_id)
-                )
-            )
-            return int(result.scalar() or 0)
+        rows = await self.list_music_group_tracks(int(group_id))
+        return len(rows)
 
 
     async def add_music_group_cleanup_message(
