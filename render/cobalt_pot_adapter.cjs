@@ -4702,8 +4702,7 @@ server.listen(PORT, HOST, () => {
   );
   if (threadsSelftestEnabled) {
     const threadsSelftestUrl =
-      String(process.env.THREADS_SHARE_SELFTEST_URL || "").trim() ||
-      "https://www.threads.com/share/InQUBOY9S/";
+      "https://www.threads.com/share/BAV6glx_i6/";
     setTimeout(async () => {
       let testFile = null;
       try {
