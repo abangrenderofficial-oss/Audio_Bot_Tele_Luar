@@ -495,7 +495,7 @@ async def _run_webhook_server(base_url: str) -> None:
     webhook_path = _resolve_webhook_path()
     webhook_url = f"{base_url}{webhook_path}"
     webhook_secret = _build_webhook_secret()
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("TELEGRAM_WEBHOOK_INTERNAL_PORT", "8081"))
 
     async def _health(_request: web.Request) -> web.Response:
         return web.json_response(
