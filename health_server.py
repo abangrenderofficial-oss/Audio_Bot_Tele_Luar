@@ -12,6 +12,39 @@ from urllib.request import Request, urlopen
 POT_PROVIDER_URL = "http://127.0.0.1:4416/get_pot"
 
 
+def _webhook_path() -> str:
+    value = (os.getenv("TELEGRAM_WEBHOOK_PATH") or "/telegram/webhook").strip()
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value
+
+
+def _proxy_telegram_webhook(body: bytes, secret_token: str | None) -> tuple[int, bytes, str]:
+    port = int(os.getenv("TELEGRAM_WEBHOOK_INTERNAL_PORT", "8081"))
+    target = f"http://127.0.0.1:{port}{_webhook_path()}"
+    headers = {"Content-Type": "application/json"}
+    if secret_token:
+        headers["X-Telegram-Bot-Api-Secret-Token"] = secret_token
+
+    request = Request(target, data=body, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=8) as response:  # noqa: S310
+            return (
+                int(getattr(response, "status", 200)),
+                response.read(),
+                response.headers.get("Content-Type", "application/json"),
+            )
+    except HTTPError as exc:
+        return (
+            int(exc.code),
+            exc.read(),
+            exc.headers.get("Content-Type", "application/json"),
+        )
+    except (URLError, OSError, ValueError):
+        payload = json.dumps({"error": "telegram webhook backend unavailable"}).encode("utf-8")
+        return 503, payload, "application/json"
+
+
 def _pot_bridge_authorized(path: str) -> bool:
     expected = (os.getenv("POT_BRIDGE_TOKEN") or "").strip()
     if not expected:
@@ -52,6 +85,24 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlsplit(self.path)
+
+        if parsed.path == _webhook_path():
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                content_length = 0
+            body = self.rfile.read(max(0, content_length))
+            status, payload, content_type = _proxy_telegram_webhook(
+                body,
+                self.headers.get("X-Telegram-Bot-Api-Secret-Token"),
+            )
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if parsed.path != "/get_pot":
             self.send_response(404)
             self.end_headers()
