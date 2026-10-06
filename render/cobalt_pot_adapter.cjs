@@ -1922,6 +1922,42 @@ async function fetchPostCopilotThreadsMedia(mediaUrl, prefix) {
     });
   } catch {}
 
+  let toolName = "postcopilot_download_video";
+  try {
+    const listResponse = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "threads-tools",
+        method: "tools/list",
+        params: {},
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const listRaw = await listResponse.text();
+    const listPayload = parsePostCopilotMcpPayload(listRaw);
+    const tools = Array.isArray(listPayload?.result?.tools)
+      ? listPayload.result.tools
+      : [];
+    const names = tools
+      .map((tool) => String(tool?.name || "").trim())
+      .filter(Boolean);
+    if (names.includes("download_video")) {
+      toolName = "download_video";
+    } else if (names.includes("postcopilot_download_video")) {
+      toolName = "postcopilot_download_video";
+    }
+    console.log(
+      `[SOCIAL-WORKER] PostCopilot tools=${names.join(",").slice(0,500)} selected=${toolName}`
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] PostCopilot tools/list failed:",
+      String(error?.message || error).slice(0, 400)
+    );
+  }
+
   const callResponse = await fetch(endpoint, {
     method: "POST",
     headers,
@@ -1930,7 +1966,7 @@ async function fetchPostCopilotThreadsMedia(mediaUrl, prefix) {
       id: "threads-download",
       method: "tools/call",
       params: {
-        name: "postcopilot_download_video",
+        name: toolName,
         arguments: { url: mediaUrl },
       },
     }),
