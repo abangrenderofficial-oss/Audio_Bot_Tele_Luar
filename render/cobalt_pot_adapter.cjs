@@ -1195,6 +1195,45 @@ async function resolveThreadsShareViaCrawler(mediaUrl) {
   return mediaUrl;
 }
 
+async function resolveThreadsShareViaJina(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+  const endpoint = "https://r.jina.ai/" + mediaUrl;
+  try {
+    const response = await fetch(endpoint, {
+      redirect: "follow",
+      headers: {
+        "accept": "text/plain,text/markdown,*/*;q=0.8",
+        "user-agent": "AbangRender-MusicBot/1.0",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    const body = await response.text();
+    const normalized = String(body || "")
+      .replace(/\\u0026/g, "&")
+      .replace(/\\\//g, "/")
+      .replace(/&#0?64;/gi, "@")
+      .replace(/&amp;/gi, "&");
+    const canonical = normalized.match(
+      /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[A-Za-z0-9._-]+\/post\/[A-Za-z0-9_-]+/i
+    )?.[0];
+    if (response.ok && canonical) {
+      console.log("[SOCIAL-WORKER] threads Jina resolved share -> " + canonical);
+      return canonical;
+    }
+    console.warn(
+      "[SOCIAL-WORKER] threads Jina resolver miss status=" + response.status +
+      " bytes=" + body.length +
+      " preview=" + normalized.replace(/\s+/g, " ").slice(0, 500)
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads Jina resolver failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaTelegramBot(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -2810,6 +2849,9 @@ async function runSocialWorkerAudio(mediaUrl, source) {
         effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaFxThreads(mediaUrl);
+        }
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaJina(mediaUrl);
         }
       }
 
