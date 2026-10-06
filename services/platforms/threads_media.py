@@ -644,10 +644,10 @@ async def resolve_threads_share_via_railway(url: str) -> str | None:
     # must hit the Railway function whose /threads-resolve route we control.
     base_url = "https://music-youtube-audio-worker-production.up.railway.app"
     token = (
-        (os.getenv("AR_MUSIC_WORKER_KEY_V3") or "").strip()
+        (os.getenv("BOT_TOKEN") or "").strip()
+        or (os.getenv("AR_MUSIC_WORKER_KEY_V3") or "").strip()
         or (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
         or (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
-        or (os.getenv("BOT_TOKEN") or "").strip()
     )
     if not base_url or not token:
         logging.info(
