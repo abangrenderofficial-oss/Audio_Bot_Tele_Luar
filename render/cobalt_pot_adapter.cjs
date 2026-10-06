@@ -1760,6 +1760,103 @@ async function fetchFxThreadsMedia(mediaUrl, prefix) {
   throw new Error(lastError);
 }
 
+async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const endpoint = "https://api.microlink.io?url=" + encodeURIComponent(mediaUrl);
+  const response = await fetch(endpoint, {
+    headers: { "accept": "application/json", "user-agent": "AbangRender-MusicBot/1.0" },
+    signal: AbortSignal.timeout(30000),
+  });
+  const raw = await response.text();
+  let payload = null;
+  try { payload = JSON.parse(raw); } catch {}
+  if (!response.ok || payload?.status !== "success") {
+    throw new Error(
+      "Microlink failed status=" + response.status + ": " +
+      String(payload?.message || raw || "invalid response").slice(0, 500)
+    );
+  }
+
+  const data = payload?.data || {};
+  const resolvedUrl = String(data?.url || "").trim();
+  const candidates = [];
+  const seen = new Set();
+  const add = (value, kind, score) => {
+    const url = String(value?.url || value || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({ url, kind, score });
+  };
+
+  add(data?.video, "video", 2200);
+  add(data?.audio, "audio", 2100);
+
+  const scan = (value, path = "") => {
+    if (typeof value === "string") {
+      if (!/^https?:\/\//i.test(value)) return;
+      if (/\.(?:mp4|mov|webm|m3u8)(?:[?#]|$)/i.test(value) || /video|fbcdn|cdninstagram/i.test(path)) {
+        add(value, "video", 1500);
+      } else if (/\.(?:m4a|mp3|aac|ogg|opus)(?:[?#]|$)/i.test(value) || /audio|music|sound/i.test(path)) {
+        add(value, "audio", 1400);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => scan(item, path + "." + index));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        scan(item, path ? path + "." + key : key);
+      }
+    }
+  };
+  scan(data);
+  candidates.sort((a, b) => b.score - a.score);
+
+  let lastError = "Microlink returned no usable media";
+  for (const candidate of candidates.slice(0, 12)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate, prefix, "", { referer: resolvedUrl || mediaUrl }
+      );
+      console.log(
+        `[SOCIAL-WORKER] threads Microlink ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title: String(data?.title || "").trim() ||
+            (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+          performer: String(data?.author || "").trim() || "Threads",
+          duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  if (
+    resolvedUrl &&
+    resolvedUrl !== mediaUrl &&
+    /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^/?#]+\/post\/[A-Za-z0-9_-]+/i.test(resolvedUrl)
+  ) {
+    console.log("[SOCIAL-WORKER] threads Microlink canonical ready -> " + resolvedUrl);
+    for (const fallback of [fetchFxThreadsMedia, fetchVxThreadsMedia, fetchThreadsDlMedia, fetchDlpandaThreadsMedia]) {
+      try { return await fallback(resolvedUrl, prefix); }
+      catch (error) { lastError = String(error?.message || error).slice(0, 500); }
+    }
+  }
+
+  console.warn(
+    "[SOCIAL-WORKER] threads Microlink no media resolved=" +
+    (resolvedUrl || "-") + " keys=" + Object.keys(data).slice(0, 30).join(",")
+  );
+  throw new Error(lastError);
+}
+
 async function fetchVxThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const original = new URL(mediaUrl);
@@ -2726,6 +2823,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : shareAlias
           ? [
+              ["Microlink", fetchMicrolinkThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
               ["vxThreads", fetchVxThreadsMedia],
               ["PostCopilot", fetchPostCopilotThreadsMedia],
