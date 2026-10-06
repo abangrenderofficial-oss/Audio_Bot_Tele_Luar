@@ -155,7 +155,32 @@ async def resolve_threads_url(
         logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
         return resolved_page
 
-    logging.warning("Threads share URL did not expose a canonical post: url=%s", candidate)
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", page or "", re.IGNORECASE | re.DOTALL)
+    canonical_match = re.search(
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)',
+        page or "",
+        re.IGNORECASE,
+    )
+    og_url_match = re.search(
+        r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
+        page or "",
+        re.IGNORECASE,
+    )
+    usernames = list(dict.fromkeys(re.findall(r'"username"\s*:\s*"([A-Za-z0-9._-]+)"', page or "")))[:8]
+    codes = list(dict.fromkeys(re.findall(r'"code"\s*:\s*"([A-Za-z0-9_-]+)"', page or "")))[:8]
+    logging.warning(
+        "Threads share URL did not expose a canonical post: url=%s final=%s bytes=%s "
+        "title=%s canonical=%s og_url=%s usernames=%s codes=%s data_sjs=%s",
+        candidate,
+        final_url,
+        len(page or ""),
+        re.sub(r"\s+", " ", unescape(title_match.group(1))).strip()[:180] if title_match else "-",
+        canonical_match.group(1)[:240] if canonical_match else "-",
+        og_url_match.group(1)[:240] if og_url_match else "-",
+        usernames,
+        codes,
+        (page or "").count("data-sjs"),
+    )
     return candidate
 
 
