@@ -1863,20 +1863,12 @@ async function fetchDlpandaThreadsMedia(mediaUrl, prefix) {
       (resultHtml.match(/<[^>]+data-download-state[^>]*>/i) || [""])[0];
     const state =
       (stateTag.match(/data-state=["']([^"']+)["']/i) || [,""])[1];
-    const messageMatch = resultHtml.match(
-      /<[^>]+data-state-message[^>]*>([\s\S]{0,1200}?)<\/[^>]+>/i
-    );
-    const message = String(messageMatch?.[1] || "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/&amp;/gi, "&")
-      .replace(/\\s+/g, " ")
-      .trim();
+
     console.warn(
-      `[SOCIAL-WORKER] DLPanda parse no media status=${parseResponse.status} type=${parseResponse.headers.get("content-type") || "-"} bytes=${resultHtml.length} state=${state || "unknown"} message=${message.slice(0,500) || "-"}`
+      `[SOCIAL-WORKER] DLPanda parse no media status=${parseResponse.status} type=${parseResponse.headers.get("content-type") || "-"} bytes=${resultHtml.length} state=${state || "unknown"}`
     );
     throw new Error(
-      `DLPanda returned no downloadable media state=${state || "unknown"}${message ? ` message=${message.slice(0,300)}` : ""}`
+      `DLPanda returned no downloadable media state=${state || "unknown"}`
     );
   }
 
