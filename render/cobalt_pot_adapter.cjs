@@ -1762,20 +1762,23 @@ function extractDlpandaDownloadCandidates(html) {
     }
   }
 
-  for (const match of html.matchAll(/https?:\\/\\/[^\\s"'<>]+/gi)) {
-    const url = decodeHtmlAttr(match[0]).replace(/[),.;\\]}]+$/g, "");
+  for (const match of html.matchAll(/https?:[^\s"'<>]+/gi)) {
+    const url = decodeHtmlAttr(match[0]).replace(/[),.;\]}]+$/g, "");
     if (seen.has(url)) continue;
     const lower = url.toLowerCase();
-    if (!/\\.(?:mp4|mov|webm|m4a|mp3|aac)(?:[?#]|$)|video|audio|media|download|bridge|proxy/.test(lower)) {
-      continue;
-    }
+    const mediaish = [
+      ".mp4", ".mov", ".webm", ".m4a", ".mp3", ".aac",
+      "video", "audio", "media", "download", "bridge", "proxy",
+    ].some((needle) => lower.includes(needle));
+    if (!mediaish) continue;
+
     seen.add(url);
-    const kind = /\\.(?:m4a|mp3|aac)(?:[?#]|$)|audio|music|sound/.test(lower)
-      ? "audio"
-      : "video";
+    const audioish = [
+      ".m4a", ".mp3", ".aac", "audio", "music", "sound",
+    ].some((needle) => lower.includes(needle));
     candidates.push({
       url,
-      kind,
+      kind: audioish ? "audio" : "video",
       score: 1200,
       pathHint: "dlpanda.raw-url",
     });
