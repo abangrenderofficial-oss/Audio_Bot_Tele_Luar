@@ -59,6 +59,13 @@ THREADS_MEDIA_HEADERS = {
     "Referer": "https://www.threads.com/",
     "User-Agent": THREADS_PAGE_HEADERS["User-Agent"],
 }
+THREADS_SHARE_CRAWLER_UAS = (
+    ("telegram", "TelegramBot (like TwitterBot)"),
+    ("facebook", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"),
+    ("whatsapp", "WhatsApp/2.24.7.81 A"),
+    ("twitter", "Twitterbot/1.0"),
+    ("discord", "Discordbot/2.0"),
+)
 
 
 def strip_threads_url(url: str) -> str:
@@ -130,6 +137,71 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
     ) as response:
         response.raise_for_status()
         return str(response.url), await response.text()
+
+
+async def resolve_threads_share_via_crawlers(url: str) -> str | None:
+    """Try link-preview crawler UAs; Threads often serves them richer share metadata."""
+    session = await get_http_session()
+    for label, user_agent in THREADS_SHARE_CRAWLER_UAS:
+        try:
+            async with session.get(
+                url,
+                headers={
+                    "Accept": THREADS_PAGE_HEADERS["Accept"],
+                    "Accept-Language": "en-US,en;q=0.8",
+                    "User-Agent": user_agent,
+                },
+                allow_redirects=True,
+                timeout=12,
+            ) as response:
+                final_url = str(response.url)
+                page = await response.text()
+        except Exception as exc:
+            logging.info(
+                "Threads crawler resolver request failed: ua=%s error=%s",
+                label,
+                exc,
+            )
+            continue
+
+        resolved = strip_threads_url(final_url)
+        if extract_threads_post_code(resolved):
+            logging.info(
+                "Resolved Threads share URL via crawler redirect: ua=%s %s -> %s",
+                label,
+                url,
+                resolved,
+            )
+            return resolved
+
+        resolved = _extract_threads_post_url_from_html(page)
+        if resolved:
+            logging.info(
+                "Resolved Threads share URL via crawler page: ua=%s %s -> %s",
+                label,
+                url,
+                resolved,
+            )
+            return resolved
+
+        title_match = re.search(
+            r"<title[^>]*>(.*?)</title>",
+            page or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        logging.info(
+            "Threads crawler resolver miss: ua=%s status=%s final=%s bytes=%s title=%s",
+            label,
+            response.status,
+            final_url[:220],
+            len(page or ""),
+            (
+                re.sub(r"\s+", " ", unescape(title_match.group(1))).strip()[:120]
+                if title_match
+                else "-"
+            ),
+        )
+    return None
 
 
 def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
@@ -332,6 +404,10 @@ async def resolve_threads_url(
     if resolved_page:
         logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
         return resolved_page
+
+    crawler_resolved = await resolve_threads_share_via_crawlers(candidate)
+    if crawler_resolved:
+        return crawler_resolved
 
     share_match = THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate))
     share_id = ""
