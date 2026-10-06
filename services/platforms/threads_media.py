@@ -537,6 +537,106 @@ async def resolve_threads_share_via_bulk_route(
     return None
 
 
+async def resolve_threads_share_via_vxthreads(url: str) -> str | None:
+    """Resolve /share/<id>/ through the current vxThreads preview service."""
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    match = re.fullmatch(r"/share/([A-Za-z0-9_-]+)/?", path)
+    if not match:
+        return None
+
+    share_id = match.group(1)
+    mirror_url = f"https://www.vxthreads.com/share/{share_id}/"
+    session = await get_http_session()
+    try:
+        async with session.get(
+            mirror_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.8",
+                "User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+            },
+            allow_redirects=False,
+            timeout=12,
+        ) as response:
+            status = response.status
+            location = response.headers.get("Location") or response.headers.get("location")
+            page = await response.text() if status == 200 else ""
+    except Exception as exc:
+        logging.info("vxThreads share resolver failed: error=%s", exc)
+        return None
+
+    if location:
+        absolute_location = location
+        if location.startswith("/"):
+            absolute_location = f"https://www.vxthreads.com{location}"
+
+        resolved = strip_threads_url(absolute_location)
+        if extract_threads_post_code(resolved):
+            logging.info(
+                "Resolved Threads share URL via vxThreads redirect: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+        try:
+            redirected = urlparse(absolute_location)
+        except Exception:
+            redirected = None
+        if redirected and redirected.netloc.lower() in {"vxthreads.com", "www.vxthreads.com"}:
+            local_match = re.fullmatch(
+                r"/@([A-Za-z0-9._-]+)/post/([A-Za-z0-9_-]+)/?",
+                redirected.path,
+            )
+            if local_match:
+                resolved = (
+                    f"https://www.threads.com/@{local_match.group(1)}/post/{local_match.group(2)}"
+                )
+                logging.info(
+                    "Resolved Threads share URL via vxThreads local redirect: %s -> %s",
+                    url,
+                    resolved,
+                )
+                return resolved
+
+    if status == 200 and page:
+        resolved = _extract_threads_post_url_from_html(page)
+        if resolved:
+            logging.info(
+                "Resolved Threads share URL via vxThreads page: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+        local_match = re.search(
+            r"https?://(?:www\.)?vxthreads\.com/@([A-Za-z0-9._-]+)/post/([A-Za-z0-9_-]+)",
+            unescape(page).replace("\\/", "/"),
+            re.IGNORECASE,
+        )
+        if local_match:
+            resolved = (
+                f"https://www.threads.com/@{local_match.group(1)}/post/{local_match.group(2)}"
+            )
+            logging.info(
+                "Resolved Threads share URL via vxThreads embedded canonical: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+    logging.info(
+        "vxThreads share resolver miss: status=%s location=%s bytes=%s",
+        status,
+        (location or "-")[:240],
+        len(page),
+    )
+    return None
+
+
 async def resolve_threads_share_via_fzthreads(url: str) -> str | None:
     """Resolve a Threads share link through FzThreads' independent resolver."""
     try:
@@ -925,6 +1025,10 @@ async def resolve_threads_url(
     )
     if bulk_resolved:
         return bulk_resolved
+
+    vxthreads_resolved = await resolve_threads_share_via_vxthreads(candidate)
+    if vxthreads_resolved:
+        return vxthreads_resolved
 
     fzthreads_resolved = await resolve_threads_share_via_fzthreads(candidate)
     if fzthreads_resolved:
