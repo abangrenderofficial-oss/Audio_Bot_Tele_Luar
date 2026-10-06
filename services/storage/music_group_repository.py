@@ -98,7 +98,7 @@ class MusicGroupRepositoryMixin:
             await session.refresh(row)
             return row
 
-    async def list_music_group_tracks(
+    async def list_music_group_tracks_raw(
         self,
         group_id: int,
         *,
@@ -116,10 +116,24 @@ class MusicGroupRepositoryMixin:
             if limit is not None:
                 stmt = stmt.limit(max(1, int(limit)))
             result = await session.execute(stmt)
-            rows, _duplicates = dedupe_music_group_tracks(result.scalars().all())
-            if limit is not None:
-                rows = rows[: max(1, int(limit))]
-            return rows
+            return result.scalars().all()
+
+    async def list_music_group_tracks(
+        self,
+        group_id: int,
+        *,
+        limit: int | None = None,
+    ) -> Sequence[MusicGroupTrack]:
+        rows = list(
+            await self.list_music_group_tracks_raw(
+                int(group_id),
+                limit=None,
+            )
+        )
+        rows, _duplicates = dedupe_music_group_tracks(rows)
+        if limit is not None:
+            rows = rows[: max(1, int(limit))]
+        return rows
 
     async def search_music_group_tracks(
         self,
