@@ -2013,6 +2013,42 @@ async def _download_mp3(
                 "External YouTube worker is not configured; trying relay fallback"
             )
 
+        cobalt_error: Exception | None = None
+        if _cobalt_music_configured():
+            try:
+                _clear_ytdlp_outputs(out_template)
+                logging.info("Trying Cobalt relay after external YouTube worker")
+                return await _run_cobalt_mp3(
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                )
+            except Exception as exc:
+                cobalt_error = exc
+                logging.warning(
+                    "Cobalt YouTube fallback failed; trying public relay: error=%s",
+                    exc,
+                )
+                _clear_ytdlp_outputs(out_template)
+
+        invidious_error: Exception | None = None
+        if _configured_invidious_api_urls():
+            try:
+                logging.info("Trying Invidious relay after Cobalt")
+                return await asyncio.to_thread(
+                    _run_invidious_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                )
+            except Exception as exc:
+                invidious_error = exc
+                logging.warning(
+                    "Invidious YouTube fallback failed; trying Piped: error=%s",
+                    exc,
+                )
+                _clear_ytdlp_outputs(out_template)
+
         try:
             logging.info("Trying Piped relay after external YouTube worker")
             return await asyncio.to_thread(
@@ -2025,6 +2061,8 @@ async def _download_mp3(
             _clear_ytdlp_outputs(out_template)
             raise MusicDownloadError(
                 f"External worker: {worker_error}\n"
+                f"--- Cobalt fallback ---\n{cobalt_error}\n"
+                f"--- Invidious fallback ---\n{invidious_error}\n"
                 f"--- Piped relay fallback ---\n{relay_error}"
             ) from relay_error
 

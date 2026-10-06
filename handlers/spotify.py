@@ -9,7 +9,7 @@ from aiogram.types import FSInputFile
 
 import messages as bm
 from app_context import bot, db, send_analytics
-from config import MAX_FILE_SIZE
+from config import MAX_FILE_SIZE, OUTPUT_DIR
 from handlers.request_dedupe import claim_message_request
 from handlers.user import update_info
 from handlers.utils import (
@@ -42,6 +42,9 @@ from services.media.audio_metadata import (
 from services.media.delivery import build_audio_cache_key, send_audio_with_thumbnail
 from services.media.music_download import (
     MusicDownloadError,
+    MusicMetadata,
+    cleanup_music_result,
+    download_music_files,
     send_youtube_fast_to_telegram,
 )
 from services.storage.music_cache import (
@@ -436,6 +439,277 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     user_settings.get("delete_message"),
                 )
                 return
+
+        # A fast worker can fail transiently while another request for the
+        # same song has already finished and populated the global cache. Recheck
+        # before downloading again. This is especially important in groups
+        # where several members can request the same Spotify track at once.
+        recovered_cache = None
+        recovered_from_youtube = False
+        for attempt in range(2):
+            if attempt:
+                await asyncio.sleep(0.8)
+            retry_spotify_fast, retry_spotify_mp3, retry_youtube_fast, retry_youtube_mp3 = (
+                await asyncio.gather(
+                    get_cached_social_audio(
+                        "spotify",
+                        source_url,
+                        variant="fast_original",
+                    ),
+                    get_cached_social_audio(
+                        "spotify",
+                        source_url,
+                        variant="mp3_320",
+                    ),
+                    get_cached_audio(
+                        youtube_url,
+                        variant="fast_original",
+                    ),
+                    get_cached_audio(
+                        youtube_url,
+                        variant="mp3_320",
+                    ),
+                )
+            )
+            recovered_cache = (
+                retry_spotify_fast
+                or retry_spotify_mp3
+                or retry_youtube_fast
+                or retry_youtube_mp3
+            )
+            recovered_from_youtube = bool(
+                (retry_youtube_fast or retry_youtube_mp3)
+                and not (retry_spotify_fast or retry_spotify_mp3)
+            )
+            if recovered_cache:
+                break
+
+        if recovered_cache:
+            recovered_file_id = str(recovered_cache["telegram_file_id"])
+            await safe_edit_text(status_message, bm.uploading_status())
+            await send_chat_action_if_needed(
+                bot,
+                message.chat.id,
+                "upload_audio",
+                business_id,
+            )
+            await send_audio_with_thumbnail(
+                audio_sender,
+                audio=recovered_file_id,
+                title=title,
+                performer=performer,
+                caption=bm.captions(
+                    user_settings.get("captions", "off"),
+                    None,
+                    bot_url,
+                ),
+                bot_url=bot_url,
+                duration=(
+                    recovered_cache.get("duration_seconds")
+                    if recovered_cache.get("duration_seconds") is not None
+                    else duration
+                ),
+                parse_mode="HTML",
+            )
+            if recovered_from_youtube:
+                try:
+                    await store_cached_social_audio(
+                        "spotify",
+                        source_url,
+                        telegram_file_id=recovered_file_id,
+                        variant="fast_original",
+                        title=title,
+                        performer=performer,
+                        duration_seconds=(
+                            float(duration) if duration is not None else None
+                        ),
+                        file_size_bytes=(
+                            int(recovered_cache.get("file_size_bytes"))
+                            if recovered_cache.get("file_size_bytes") is not None
+                            else None
+                        ),
+                    )
+                except Exception as cache_error:
+                    logging.warning(
+                        "Spotify recovered cache store failed: %s",
+                        cache_error,
+                    )
+            logging.info(
+                "Spotify recovered from persistent cache after fast-worker failure"
+            )
+            request_lease.mark_success()
+            await maybe_delete_user_message(
+                message,
+                user_settings.get("delete_message"),
+            )
+            return
+
+        # Robust second path: download the already-resolved public YouTube
+        # match through the shared music pipeline. That pipeline uses the
+        # external worker first and then Cobalt/Invidious/Piped relays; it
+        # deliberately avoids relying on Render's direct YouTube yt-dlp path.
+        robust_result = None
+        try:
+            await safe_edit_text(
+                status_message,
+                "🎧 Spotify • fast path sibuk, cuba laluan kedua...",
+            )
+            robust_metadata = MusicMetadata(
+                title=title,
+                performer=performer,
+                file_base=str(track.get("spotify_id") or "spotify-track"),
+                duration=(
+                    float(duration) if duration is not None else None
+                ),
+                thumbnail=(
+                    str(track.get("thumbnail"))
+                    if track.get("thumbnail")
+                    else None
+                ),
+                source_url=youtube_url,
+                source="youtube",
+            )
+            robust_started = asyncio.get_running_loop().time()
+            robust_result = await download_music_files(
+                youtube_url,
+                metadata=robust_metadata,
+                output_dir=OUTPUT_DIR,
+                job_id=(
+                    f"spotify-{message.chat.id}-"
+                    f"{getattr(message, 'message_id', 'request')}"
+                ),
+            )
+            if not robust_result.paths:
+                raise MusicDownloadError(
+                    "Spotify robust fallback produced no audio files"
+                )
+
+            await safe_edit_text(status_message, bm.uploading_status())
+            await send_chat_action_if_needed(
+                bot,
+                message.chat.id,
+                "upload_audio",
+                business_id,
+            )
+
+            sent_file_id: str | None = None
+            total_parts = len(robust_result.paths)
+            for index, path in enumerate(robust_result.paths, start=1):
+                prepared_metadata = await prepare_mp3_metadata(path, track)
+                try:
+                    thumbnail = (
+                        FSInputFile(
+                            str(prepared_metadata.thumbnail_path),
+                            filename="cover.jpg",
+                        )
+                        if prepared_metadata.thumbnail_path
+                        else await get_bot_avatar_thumbnail(bot)
+                    )
+                    display_name = (
+                        title
+                        if total_parts == 1
+                        else f"{title} - Part {index}"
+                    )
+                    sent = await send_audio_with_thumbnail(
+                        audio_sender,
+                        audio=FSInputFile(
+                            path,
+                            filename=build_audio_filename(display_name),
+                        ),
+                        title=display_name,
+                        performer=performer,
+                        caption=bm.captions(
+                            user_settings.get("captions", "off"),
+                            None,
+                            bot_url,
+                        ),
+                        audio_path=path,
+                        bot_avatar=thumbnail,
+                        bot_url=bot_url,
+                        duration=(
+                            float(duration) if duration is not None else None
+                        ),
+                        embed_thumbnail=False,
+                        parse_mode="HTML",
+                    )
+                finally:
+                    prepared_metadata.cleanup()
+
+                if index == 1:
+                    sent_audio = getattr(sent, "audio", None)
+                    sent_file_id = (
+                        str(getattr(sent_audio, "file_id", "") or "")
+                        or None
+                    )
+
+            if sent_file_id and total_parts == 1:
+                file_size = None
+                try:
+                    import os
+
+                    file_size = os.path.getsize(robust_result.paths[0])
+                except OSError:
+                    pass
+                variant = (
+                    "mp3_320"
+                    if robust_result.bitrate_kbps >= 320
+                    else "fast_original"
+                )
+                try:
+                    await asyncio.gather(
+                        store_cached_social_audio(
+                            "spotify",
+                            source_url,
+                            telegram_file_id=sent_file_id,
+                            variant=variant,
+                            title=title,
+                            performer=performer,
+                            duration_seconds=(
+                                float(duration)
+                                if duration is not None
+                                else None
+                            ),
+                            file_size_bytes=file_size,
+                        ),
+                        store_cached_audio(
+                            youtube_url,
+                            telegram_file_id=sent_file_id,
+                            variant=variant,
+                            title=title,
+                            performer=performer,
+                            duration_seconds=(
+                                float(duration)
+                                if duration is not None
+                                else None
+                            ),
+                            file_size_bytes=file_size,
+                        ),
+                    )
+                except Exception as cache_error:
+                    logging.warning(
+                        "Spotify robust fallback cache store failed: %s",
+                        cache_error,
+                    )
+
+            logging.info(
+                "Spotify robust fallback succeeded: seconds=%.2f parts=%s bitrate=%s",
+                asyncio.get_running_loop().time() - robust_started,
+                total_parts,
+                robust_result.bitrate_kbps,
+            )
+            request_lease.mark_success()
+            await maybe_delete_user_message(
+                message,
+                user_settings.get("delete_message"),
+            )
+            return
+        except Exception as robust_error:
+            logging.warning(
+                "Spotify robust fallback failed; trying final legacy path: %s",
+                robust_error,
+            )
+        finally:
+            await cleanup_music_result(robust_result)
 
         async def _send_cached(file_id: str):
             await safe_edit_text(status_message, bm.uploading_status())
