@@ -1149,7 +1149,8 @@ async function resolveThreadsShareViaCrawler(mediaUrl) {
   const crawlerUa =
     "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
+  const maxAttempts = isThreadsShareAlias(mediaUrl) ? 1 : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await fetch(mediaUrl, {
         redirect: "follow",
@@ -2392,6 +2393,23 @@ async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
     " description=" + JSON.stringify(String(data?.description || "").slice(0, 240))
   );
 
+  const unavailableDescription = String(data?.description || "").toLowerCase();
+  const strongUnavailable =
+    isThreadsShareAlias(mediaUrl) &&
+    (!data?.author || !String(data.author).trim()) &&
+    (!data?.date || !String(data.date).trim()) &&
+    (
+      unavailableDescription.includes("link’s not working") ||
+      unavailableDescription.includes("link's not working") ||
+      unavailableDescription.includes("page is gone") ||
+      unavailableDescription.includes("page isn't available")
+    );
+  if (strongUnavailable) {
+    throw new Error(
+      "THREADS_SHARE_UNAVAILABLE: Threads reports this share link is no longer available"
+    );
+  }
+
   if (
     isThreadsShareAlias(mediaUrl) &&
     (!resolvedUrl || resolvedUrl === mediaUrl)
@@ -2663,8 +2681,8 @@ async function fetchThreadsSsrMedia(mediaUrl, prefix) {
       lastError = String(error?.message || error).slice(0, 500);
     }
 
-    if (attempt < 5) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
 
@@ -3617,77 +3635,56 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     if (source === "threads") {
       const shareAlias = isThreadsShareAlias(mediaUrl);
 
-      // Keep the hot path short. Render's current IP gets a generic Threads
-      // shell for /share/ aliases, so avoid the old multi-attempt crawler
-      // waterfall. Try the preview UA once, then media providers directly.
-      if (shareAlias) {
-        // First try Threads' documented crawler-style redirect through the
-        // worker's WARP egress. Render's native IP receives only the SPA shell.
-        effectiveMediaUrl = resolveThreadsShareViaWarpCrawler(mediaUrl);
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaFixThreads(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaFxThreads(mediaUrl);
-        }
-        if (effectiveMediaUrl === mediaUrl) {
-          effectiveMediaUrl = await resolveThreadsShareViaJina(mediaUrl);
-        }
-      }
-
-      const providers = effectiveMediaUrl !== mediaUrl
+      // Short production path:
+      // 1) Threads SSR: valid public /share/ links normally expose the post and
+      //    media immediately (video audio first, standalone music second).
+      // 2) Microlink: quickly classifies dead/private/stale aliases and can also
+      //    surface a canonical URL/media when available.
+      // 3) Two lightweight public fallbacks. Do not run the old minute-long
+      //    browser/provider waterfall.
+      const providers = shareAlias
         ? [
             ["ThreadsSSR", fetchThreadsSsrMedia],
+            ["Microlink", fetchMicrolinkThreadsMedia],
+            ...(String(process.env.EASYDOWN_API_KEY || "").trim()
+              ? [["EasyDown", fetchEasyDownThreadsMedia]]
+              : []),
             ["FixThreads", fetchFixThreadsMedia],
-            ["FxThreads", fetchFxThreadsMedia],
-            ["vxThreads", fetchVxThreadsMedia],
-            ["PostCopilot", fetchPostCopilotThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
-            ["DLPanda", fetchDlpandaThreadsMedia],
           ]
-        : shareAlias
-          ? [
-              ["ThreadsSSR", fetchThreadsSsrMedia],
-              ...(String(process.env.EASYDOWN_API_KEY || "").trim()
-                ? [["EasyDown", fetchEasyDownThreadsMedia]]
-                : []),
-              ["FixThreads", fetchFixThreadsMedia],
-              ["curl-x", fetchCurlXThreadsMedia],
-              ["Microlink", fetchMicrolinkThreadsMedia],
-              ["FxThreads", fetchFxThreadsMedia],
-              ["vxThreads", fetchVxThreadsMedia],
-              ["PostCopilot", fetchPostCopilotThreadsMedia],
-              ["DLPanda", fetchDlpandaThreadsMedia],
-              ["ThreadsDL", fetchThreadsDlMedia],
-            ]
-          : [
-              ["ThreadsSSR", fetchThreadsSsrMedia],
-              ["FixThreads", fetchFixThreadsMedia],
-              ["FxThreads", fetchFxThreadsMedia],
-              ["ThreadsDL", fetchThreadsDlMedia],
-              ["vxThreads", fetchVxThreadsMedia],
-              ["DLPanda", fetchDlpandaThreadsMedia],
-            ];
+        : [
+            ["ThreadsSSR", fetchThreadsSsrMedia],
+            ["ThreadsDL", fetchThreadsDlMedia],
+            ["FixThreads", fetchFixThreadsMedia],
+          ];
 
+      let lastThreadsError = null;
       for (const [providerName, provider] of providers) {
         try {
           console.log(`[SOCIAL-WORKER] threads ${providerName} hybrid start`);
-          threadsProvider = await provider(effectiveMediaUrl, prefix);
+          threadsProvider = await provider(mediaUrl, prefix);
           providerRawPath = threadsProvider.filePath;
           break;
         } catch (error) {
+          const message = String(error?.message || error);
+          lastThreadsError = message;
           console.warn(
             `[SOCIAL-WORKER] threads ${providerName} hybrid failed:`,
-            String(error?.message || error).slice(0, 1200)
+            message.slice(0, 1200)
           );
           clearOutputs();
+
+          if (message.includes("THREADS_SHARE_UNAVAILABLE")) {
+            throw error;
+          }
         }
+      }
+
+      if (shareAlias && !providerRawPath) {
+        throw new Error(
+          "THREADS_SHARE_UNRESOLVED: " +
+          String(lastThreadsError || "public share alias could not be resolved")
+        );
       }
     }
 
