@@ -40,6 +40,7 @@ from services.media.audio_metadata import (
     prepare_mp3_metadata,
 )
 from services.media.delivery import build_audio_cache_key, send_audio_with_thumbnail
+from services.music_group_dedupe import duplicate_keeper_message_id
 from services.media.music_download import (
     MusicDownloadError,
     MusicMetadata,
@@ -120,6 +121,60 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
     ) -> None:
         if not group_music_connected or not file_id or audio_message_id is None:
             return
+
+        candidate_message_id = int(audio_message_id)
+
+        async def _drop_if_duplicate() -> bool:
+            try:
+                raw_lister = getattr(db, "list_music_group_tracks_raw", None)
+                if callable(raw_lister):
+                    tracks = list(await raw_lister(message.chat.id))
+                else:
+                    tracks = list(await db.list_music_group_tracks(message.chat.id))
+                keeper_id = duplicate_keeper_message_id(
+                    tracks,
+                    candidate_audio_message_id=candidate_message_id,
+                    service="spotify",
+                    source_url=source_url,
+                    title=title,
+                    performer=performer,
+                    telegram_file_id=file_id,
+                )
+            except Exception as exc:
+                logging.debug(
+                    "Spotify duplicate check failed: group=%s error=%s",
+                    message.chat.id,
+                    exc,
+                )
+                return False
+
+            if keeper_id == candidate_message_id:
+                return False
+
+            for stale_message_id in (
+                candidate_message_id,
+                getattr(message, "message_id", None),
+            ):
+                if stale_message_id is None:
+                    continue
+                try:
+                    await bot.delete_message(
+                        message.chat.id,
+                        int(stale_message_id),
+                    )
+                except Exception:
+                    pass
+            logging.info(
+                "Spotify duplicate group audio removed: group=%s removed=%s keeper=%s",
+                message.chat.id,
+                candidate_message_id,
+                keeper_id,
+            )
+            return True
+
+        if await _drop_if_duplicate():
+            return
+
         try:
             parsed_duration = float(duration) if duration is not None else None
         except (TypeError, ValueError):
@@ -137,8 +192,9 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                 telegram_file_id=str(file_id),
                 duration_seconds=parsed_duration,
                 source_message_id=getattr(message, "message_id", None),
-                audio_message_id=int(audio_message_id),
+                audio_message_id=candidate_message_id,
             )
+            await _drop_if_duplicate()
         except Exception as exc:
             logging.warning(
                 "Spotify group playlist record failed: group=%s error=%s",

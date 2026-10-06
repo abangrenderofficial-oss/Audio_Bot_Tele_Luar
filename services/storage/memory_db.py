@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Optional
 
+from services.music_group_dedupe import dedupe_music_group_tracks
+
 DEFAULT_USER_SETTINGS = {
     "captions": "off",
     "delete_message": "off",
@@ -281,7 +283,7 @@ class MemoryDataBase:
         tracks.append(row)
         return row
 
-    async def list_music_group_tracks(
+    async def list_music_group_tracks_raw(
         self,
         group_id: int,
         *,
@@ -307,6 +309,21 @@ class MemoryDataBase:
             rows = rows[: max(1, int(limit))]
         return rows
 
+    async def list_music_group_tracks(
+        self,
+        group_id: int,
+        *,
+        limit: int | None = None,
+    ) -> list[Any]:
+        rows = await self.list_music_group_tracks_raw(
+            int(group_id),
+            limit=None,
+        )
+        rows, _duplicates = dedupe_music_group_tracks(rows)
+        if limit is not None:
+            rows = rows[: max(1, int(limit))]
+        return rows
+
     async def search_music_group_tracks(
         self,
         group_id: int,
@@ -326,7 +343,9 @@ class MemoryDataBase:
                 limit=limit,
             )
             if remote is not None:
-                return [SimpleNamespace(**item) for item in remote]
+                rows = [SimpleNamespace(**item) for item in remote]
+                rows, _duplicates = dedupe_music_group_tracks(rows)
+                return rows[: max(1, min(int(limit), 25))]
         except Exception:
             pass
 
@@ -339,6 +358,7 @@ class MemoryDataBase:
             if needle in str(getattr(row, "title", "") or "").casefold()
             or needle in str(getattr(row, "performer", "") or "").casefold()
         ]
+        rows, _duplicates = dedupe_music_group_tracks(rows)
         return rows[: max(1, min(int(limit), 25))]
 
     async def get_music_group_source_message_ids(
@@ -410,19 +430,8 @@ class MemoryDataBase:
             rows.pop(int(message_id), None)
 
     async def get_music_group_track_count(self, group_id: int) -> int:
-        gid = int(group_id)
-        try:
-            from services.storage.music_cache import (
-                get_remote_music_group_track_count,
-            )
-
-            remote = await get_remote_music_group_track_count(gid)
-            if remote is not None:
-                return remote
-        except Exception:
-            pass
-
-        return len(self._music_tracks.get(gid, []))
+        rows = await self.list_music_group_tracks(int(group_id))
+        return len(rows)
 
     async def record_download(
         self,

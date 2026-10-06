@@ -13,6 +13,10 @@ from aiogram.utils.media_group import MediaGroupBuilder
 from app_context import bot, db
 from handlers.commands import update_info
 from services.logger import logger as logging
+from services.music_group_dedupe import (
+    clean_music_title,
+    dedupe_music_group_tracks,
+)
 
 logging = logging.bind(service="group_music")
 router = Router(name=__name__)
@@ -282,6 +286,58 @@ async def _delete_group_messages(
     return deleted, failed
 
 
+async def _clean_group_audio_message(
+    chat_id: int,
+    track: object,
+) -> None:
+    message_id = getattr(track, "audio_message_id", None)
+    file_id = getattr(track, "telegram_file_id", None)
+    if message_id is None or not file_id:
+        return
+
+    clean_title = clean_music_title(getattr(track, "title", None))
+    media_kwargs: dict[str, object] = {
+        "media": str(file_id),
+        "title": clean_title[:64],
+        "caption": f"🎵 {html.escape(clean_title)}",
+        "parse_mode": "HTML",
+    }
+    performer = str(getattr(track, "performer", "") or "").strip()
+    if performer:
+        media_kwargs["performer"] = performer[:64]
+
+    duration = getattr(track, "duration_seconds", None)
+    try:
+        parsed_duration = int(float(duration)) if duration is not None else 0
+    except (TypeError, ValueError):
+        parsed_duration = 0
+    if parsed_duration > 0:
+        media_kwargs["duration"] = parsed_duration
+
+    try:
+        await bot.edit_message_media(
+            chat_id=chat_id,
+            message_id=int(message_id),
+            media=types.InputMediaAudio(**media_kwargs),
+        )
+    except Exception as exc:
+        logging.debug(
+            "Clearall audio cleanup edit failed: group=%s message=%s error=%s",
+            chat_id,
+            message_id,
+            exc,
+        )
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=int(message_id),
+                caption=f"🎵 {html.escape(clean_title)}",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
 @router.message(Command("clearall"))
 async def clear_all_group_text(message: types.Message) -> None:
     if not await _require_group(message):
@@ -296,10 +352,21 @@ async def clear_all_group_text(message: types.Message) -> None:
         )
         return
 
-    tracks = list(await db.list_music_group_tracks(message.chat.id))
+    raw_lister = getattr(db, "list_music_group_tracks_raw", None)
+    if callable(raw_lister):
+        raw_tracks = list(await raw_lister(message.chat.id))
+    else:
+        raw_tracks = list(await db.list_music_group_tracks(message.chat.id))
+
+    tracks, duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
     audio_message_ids = {
         int(track.audio_message_id)
         for track in tracks
+        if getattr(track, "audio_message_id", None) is not None
+    }
+    duplicate_audio_ids = {
+        int(track.audio_message_id)
+        for track in duplicate_tracks
         if getattr(track, "audio_message_id", None) is not None
     }
 
@@ -335,13 +402,22 @@ async def clear_all_group_text(message: types.Message) -> None:
 
     # Explicit ids are still included when they fall just outside the sweep.
     # Known audio ids are never sent to Telegram's delete API.
-    target_ids = sweep_ids | tracked_ids | source_ids | {current_message_id}
+    target_ids = (
+        sweep_ids
+        | tracked_ids
+        | source_ids
+        | duplicate_audio_ids
+        | {current_message_id}
+    )
     target_ids.difference_update(audio_message_ids)
 
     deleted, failed = await _delete_group_messages(
         message.chat.id,
         target_ids,
     )
+
+    for track in tracks:
+        await _clean_group_audio_message(message.chat.id, track)
 
     deleted_source_ids = sorted(source_ids.intersection(deleted))
     if deleted_source_ids:
@@ -356,13 +432,14 @@ async def clear_all_group_text(message: types.Message) -> None:
 
     logging.info(
         "Group clearall complete: group=%s sweep=%s-%s deleted=%s failed=%s "
-        "audio_preserved=%s",
+        "audio_preserved=%s duplicates_removed=%s",
         message.chat.id,
         sweep_floor,
         current_message_id,
         len(deleted),
         len(failed),
         len(audio_message_ids),
+        len(duplicate_audio_ids.intersection(deleted)),
     )
 
 
