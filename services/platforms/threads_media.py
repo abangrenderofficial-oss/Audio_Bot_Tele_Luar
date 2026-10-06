@@ -10,6 +10,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 import aiohttp
@@ -364,17 +365,62 @@ async def resolve_threads_share_via_headerless_fetch(url: str) -> str | None:
 
 
 async def resolve_threads_share_via_manual_redirect(url: str) -> str | None:
-    """Walk Threads' raw GET redirect chain with a non-browser user agent."""
+    """Resolve Threads share links with Meta's plain-client redirect path first.
+
+    A current Threads extractor verified in 2026 uses an exact curl/8.0 request
+    with redirects disabled; Meta returns the canonical post in Location for
+    public /share/ links. Keep the aiohttp walk as a fallback.
+    """
+
+    def _urllib_probe(target: str) -> tuple[int | None, str]:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        request = urllib.request.Request(target, headers={"User-Agent": "curl/8.0"})
+        try:
+            response = urllib.request.build_opener(_NoRedirect).open(request, timeout=12)
+            return getattr(response, "status", None), (response.headers.get("Location") or "").strip()
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                return exc.code, (exc.headers.get("Location") or "").strip()
+            return exc.code, ""
+        except Exception:
+            return None, ""
+
+    status, location = await asyncio.to_thread(_urllib_probe, (url or "").strip())
+    if location:
+        next_url = urljoin(url, location)
+        canonical = strip_threads_url(next_url)
+        parsed = urlparse(next_url)
+        if extract_threads_post_code(canonical) or re.match(
+            r"^/t/[A-Za-z0-9_-]+/?$",
+            parsed.path,
+            re.IGNORECASE,
+        ):
+            logging.info(
+                "Resolved Threads share URL via plain curl redirect: status=%s %s -> %s",
+                status,
+                url,
+                canonical if extract_threads_post_code(canonical) else next_url,
+            )
+            return canonical if extract_threads_post_code(canonical) else next_url
+
+    logging.info(
+        "Threads plain curl redirect probe miss: status=%s location=%s",
+        status,
+        (location or "-")[:220],
+    )
+
     session = await get_http_session()
     current = (url or "").strip()
-
     for hop in range(5):
         try:
             async with session.get(
                 current,
                 headers={
                     "Accept": "*/*",
-                    "User-Agent": "curl/8.5.0",
+                    "User-Agent": "curl/8.0",
                 },
                 allow_redirects=False,
                 timeout=10,
@@ -434,7 +480,6 @@ async def resolve_threads_share_via_manual_redirect(url: str) -> str | None:
         current = next_url
 
     return None
-
 
 async def resolve_threads_share_via_head(url: str) -> str | None:
     """Probe HEAD redirects for /share/ tokens before heavier resolution paths."""
@@ -2009,6 +2054,10 @@ async def resolve_threads_url(
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
 
+    plain_redirect_resolved = await resolve_threads_share_via_manual_redirect(candidate)
+    if plain_redirect_resolved:
+        return plain_redirect_resolved
+
     oembed_resolved = await resolve_threads_share_via_oembed(candidate)
     if oembed_resolved:
         return oembed_resolved
@@ -2037,10 +2086,6 @@ async def resolve_threads_url(
     headerless_resolved = await resolve_threads_share_via_headerless_fetch(candidate)
     if headerless_resolved:
         return headerless_resolved
-
-    manual_resolved = await resolve_threads_share_via_manual_redirect(candidate)
-    if manual_resolved:
-        return manual_resolved
 
     head_resolved = await resolve_threads_share_via_head(candidate)
     if head_resolved:
