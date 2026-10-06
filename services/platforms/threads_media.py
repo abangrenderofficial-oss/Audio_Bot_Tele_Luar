@@ -489,6 +489,63 @@ async def resolve_threads_share_via_bulk_route(
     return None
 
 
+async def resolve_threads_share_via_fzthreads(url: str) -> str | None:
+    """Resolve a Threads share link through FzThreads' independent resolver."""
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    match = re.fullmatch(r"/share/([A-Za-z0-9_-]+)/?", path)
+    if not match:
+        return None
+
+    share_id = match.group(1)
+    session = await get_http_session()
+    try:
+        async with session.get(
+            f"https://fzthreads.com/share/{share_id}",
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "TelegramBot (like TwitterBot)",
+            },
+            allow_redirects=False,
+            timeout=12,
+        ) as response:
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location") or response.headers.get("location")
+                if location:
+                    resolved_redirect = strip_threads_url(location)
+                    if extract_threads_post_code(resolved_redirect):
+                        logging.info(
+                            "Resolved Threads share URL via FzThreads redirect: %s -> %s",
+                            url,
+                            resolved_redirect,
+                        )
+                        return resolved_redirect
+                return None
+            if response.status != 200:
+                logging.info(
+                    "FzThreads resolver returned HTTP %s for share=%s",
+                    response.status,
+                    share_id,
+                )
+                return None
+            page = await response.text()
+    except Exception as exc:
+        logging.info("FzThreads resolver failed: error=%s", exc)
+        return None
+
+    resolved = _extract_threads_post_url_from_html(page)
+    if resolved:
+        logging.info(
+            "Resolved Threads share URL via FzThreads page: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+    return None
+
+
 async def resolve_threads_share_via_fixembed(url: str) -> str | None:
     """Use FixEmbed's Threads resolver when Meta blocks this server's share redirect."""
     session = await get_http_session()
@@ -816,6 +873,10 @@ async def resolve_threads_url(
     )
     if bulk_resolved:
         return bulk_resolved
+
+    fzthreads_resolved = await resolve_threads_share_via_fzthreads(candidate)
+    if fzthreads_resolved:
+        return fzthreads_resolved
 
     fixembed_resolved = await resolve_threads_share_via_fixembed(candidate)
     if fixembed_resolved:
