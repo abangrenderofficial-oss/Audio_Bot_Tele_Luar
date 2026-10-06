@@ -637,6 +637,86 @@ async def resolve_threads_share_via_vxthreads(url: str) -> str | None:
     return None
 
 
+async def resolve_threads_share_via_railway(url: str) -> str | None:
+    """Resolve opaque Threads share aliases from the existing Railway worker."""
+    base_url = (
+        (os.getenv("RAILWAY_YOUTUBE_WORKER_URL") or "").strip()
+        or "https://music-youtube-audio-worker-production.up.railway.app"
+    ).rstrip("/")
+    token = (
+        (os.getenv("AR_MUSIC_WORKER_KEY_V3") or "").strip()
+        or (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
+        or (os.getenv("RAILWAY_YOUTUBE_WORKER_API_KEY") or "").strip()
+        or (os.getenv("BOT_TOKEN") or "").strip()
+    )
+    if not base_url or not token:
+        logging.info(
+            "Railway Threads resolver skipped: endpoint=%s token_present=%s",
+            bool(base_url),
+            bool(token),
+        )
+        return None
+
+    session = await get_http_session()
+    try:
+        async with session.post(
+            f"{base_url}/threads-resolve",
+            json={"url": url},
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "AbangRender-MusicBot/1.0",
+            },
+            allow_redirects=False,
+            timeout=15,
+        ) as response:
+            status = response.status
+            try:
+                payload = await response.json(content_type=None)
+            except Exception:
+                payload = None
+    except Exception as exc:
+        logging.info("Railway Threads resolver request failed: error=%s", exc)
+        return None
+
+    if status != 200 or not isinstance(payload, dict) or payload.get("ok") is not True:
+        logging.info(
+            "Railway Threads resolver miss: status=%s error=%s",
+            status,
+            payload.get("error") if isinstance(payload, dict) else "invalid_payload",
+        )
+        return None
+
+    resolved = strip_threads_url(str(payload.get("url") or "").strip())
+    if extract_threads_post_code(resolved):
+        logging.info(
+            "Resolved Threads share URL via Railway edge: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    try:
+        parsed = urlparse(resolved)
+    except Exception:
+        parsed = None
+    if (
+        parsed
+        and parsed.scheme == "https"
+        and parsed.netloc.lower() in {"threads.com", "www.threads.com"}
+        and re.fullmatch(r"/t/[A-Za-z0-9_-]+/?", parsed.path)
+    ):
+        logging.info(
+            "Resolved Threads share URL via Railway edge short form: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    logging.info("Railway Threads resolver returned unsupported target")
+    return None
+
+
 async def resolve_threads_share_via_fzthreads(url: str) -> str | None:
     """Resolve a Threads share link through FzThreads' independent resolver."""
     try:
@@ -1029,6 +1109,10 @@ async def resolve_threads_url(
     vxthreads_resolved = await resolve_threads_share_via_vxthreads(candidate)
     if vxthreads_resolved:
         return vxthreads_resolved
+
+    railway_resolved = await resolve_threads_share_via_railway(candidate)
+    if railway_resolved:
+        return railway_resolved
 
     fzthreads_resolved = await resolve_threads_share_via_fzthreads(candidate)
     if fzthreads_resolved:
