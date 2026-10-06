@@ -384,7 +384,7 @@ async def _run_social_music_selftest_from_env() -> None:
     cases = [
         (
             "threads",
-            "https://www.threads.com/share/InQUBOY9S/",
+            "https://www.threads.com/share/_6cMYsy0h/",
         ),
         (
             "threads",
