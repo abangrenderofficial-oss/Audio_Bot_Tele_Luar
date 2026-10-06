@@ -1429,11 +1429,6 @@ async def send_youtube_fast_to_telegram(
     if business_connection_id:
         payload["business_connection_id"] = business_connection_id
 
-    logging.info(
-        "Fast social worker target host=%s source=%s",
-        urlparse(base_url).hostname or "-",
-        source,
-    )
     started = time.perf_counter()
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(180.0, connect=20.0),
