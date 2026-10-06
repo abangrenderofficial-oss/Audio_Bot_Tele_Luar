@@ -152,6 +152,89 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return final_url, page
 
 
+async def resolve_threads_share_via_extension_fetch(url: str) -> str | None:
+    """Mirror a real Chrome extension fetch as closely as possible.
+
+    The open-source Threads Clean Link extension resolves /share/<id>/ with a
+    normal browser GET, credentials omitted, redirects followed, and an
+    extension Origin. Render's plain HTTP clients receive the SPA/login shell,
+    so try the browser-extension request shape before heavier fallbacks.
+    """
+    timeout = aiohttp.ClientTimeout(total=12)
+    variants = (
+        {
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/141.0.0.0 Safari/537.36"
+            ),
+            "Origin": "chrome-extension://hehokicokbgajpanjcajhmflaennnmdj",
+        },
+        {
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/141.0.0.0 Safari/537.36"
+            ),
+            "Origin": "chrome-extension://hehokicokbgajpanjcajhmflaennnmdj",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "none",
+        },
+    )
+    for index, headers in enumerate(variants, 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    allow_redirects=True,
+                ) as response:
+                    final_url = str(response.url)
+                    page = await response.text(errors="replace")
+                    status = response.status
+        except Exception as exc:
+            logging.info(
+                "Threads extension-style resolver request failed: variant=%s error=%s",
+                index,
+                exc,
+            )
+            continue
+
+        resolved = strip_threads_url(final_url)
+        if extract_threads_post_code(resolved):
+            logging.info(
+                "Resolved Threads share URL via extension-style fetch: variant=%s %s -> %s",
+                index,
+                url,
+                resolved,
+            )
+            return resolved
+
+        resolved = _extract_threads_post_url_from_html(page)
+        if resolved:
+            logging.info(
+                "Resolved Threads share URL via extension-style page metadata: variant=%s %s -> %s",
+                index,
+                url,
+                resolved,
+            )
+            return resolved
+
+        logging.info(
+            "Threads extension-style resolver miss: variant=%s status=%s final=%s bytes=%s",
+            index,
+            status,
+            final_url[:220],
+            len(page),
+        )
+    return None
+
+
 async def resolve_threads_share_via_headerless_fetch(url: str) -> str | None:
     """Mirror browser extension fetch: no explicit/automatic User-Agent header."""
     timeout = aiohttp.ClientTimeout(total=12)
@@ -1193,6 +1276,10 @@ async def resolve_threads_url(
         _resolve_threads_share_with_extension_fetch_sync,
         candidate,
     )
+    if extension_resolved:
+        return extension_resolved
+
+    extension_resolved = await resolve_threads_share_via_extension_fetch(candidate)
     if extension_resolved:
         return extension_resolved
 
