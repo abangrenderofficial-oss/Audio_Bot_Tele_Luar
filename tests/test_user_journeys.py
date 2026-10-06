@@ -85,6 +85,13 @@ async def test_group_link_requires_dm_then_replays_after_private_start(monkeypat
 
     middleware = PrivateChatGuardMiddleware()
     handler = AsyncMock(return_value="handled")
+    monkeypatch.setattr(
+        private_chat_guard,
+        "db",
+        SimpleNamespace(
+            is_music_group_connected=AsyncMock(return_value=False),
+        ),
+    )
     group_message = _guard_message(
         user_id=42,
         chat_id=-100500,
@@ -158,6 +165,13 @@ async def test_realistic_chain_allows_same_user_in_multiple_group_chats(monkeypa
 
     antiflood_middleware = AntifloodMiddleware(max_messages=1, message_window_seconds=1, cooldown_seconds=2)
     private_guard = PrivateChatGuardMiddleware()
+    monkeypatch.setattr(
+        private_chat_guard,
+        "db",
+        SimpleNamespace(
+            is_music_group_connected=AsyncMock(return_value=False),
+        ),
+    )
     final_handler = AsyncMock(return_value="handled")
     shared_bot = SimpleNamespace(send_chat_action=AsyncMock())
 

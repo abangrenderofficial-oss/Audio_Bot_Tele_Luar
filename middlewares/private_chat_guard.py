@@ -11,6 +11,7 @@ from aiogram.types import Message
 
 import keyboards as kb
 import messages as bm
+from app_context import db
 from services.links.detection import extract_supported_link
 from services.runtime.pending_requests import PendingRequest, get_pending, set_pending
 from services.runtime.request_dedupe import same_request
@@ -44,6 +45,13 @@ class PrivateChatGuardMiddleware(BaseMiddleware):
         if detected is None:
             return await handler(event, data)
         service, source_url = detected
+
+        try:
+            checker = getattr(db, "is_music_group_connected", None)
+            if callable(checker) and await checker(event.chat.id):
+                return await handler(event, data)
+        except Exception:
+            pass
 
         bot = data.get("bot")
         if not bot:

@@ -269,6 +269,32 @@ async def test_private_chat_guard_allows_private_messages_and_irrelevant_group_m
 
 
 @pytest.mark.asyncio
+async def test_private_chat_guard_allows_connected_group_member_link_without_dm(monkeypatch):
+    private_chat_guard._can_dm_cache.clear()
+
+    middleware = private_chat_guard.PrivateChatGuardMiddleware()
+    handler = AsyncMock(return_value="handled")
+    fake_db = SimpleNamespace(
+        is_music_group_connected=AsyncMock(return_value=True),
+    )
+    bot = SimpleNamespace(send_chat_action=AsyncMock())
+    event = Mock(spec=Message)
+    event.chat = SimpleNamespace(id=-100123, type=ChatType.SUPERGROUP)
+    event.from_user = SimpleNamespace(id=88, is_bot=False)
+    event.text = "https://youtu.be/dQw4w9WgXcQ"
+    event.caption = None
+
+    monkeypatch.setattr(private_chat_guard, "db", fake_db)
+
+    result = await middleware(handler, event, {"bot": bot})
+
+    assert result == "handled"
+    fake_db.is_music_group_connected.assert_awaited_once_with(event.chat.id)
+    bot.send_chat_action.assert_not_awaited()
+    handler.assert_awaited_once_with(event, {"bot": bot})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "text",
     [
