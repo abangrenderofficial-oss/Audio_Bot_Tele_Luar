@@ -12,6 +12,10 @@ from aiogram.utils.media_group import MediaGroupBuilder
 
 from app_context import bot, db
 from handlers.commands import update_info
+from services.admin_music_monitor import (
+    is_admin_music_owner,
+    set_admin_music_monitor_group,
+)
 from services.logger import logger as logging
 from services.music_group_dedupe import (
     clean_music_title,
@@ -152,6 +156,33 @@ async def connect_music_group(message: types.Message) -> None:
         "Mulai sekarang ahli group boleh hantar link YouTube / TikTok / Instagram / "
         "Threads / X dan bot akan hantar audio terus dalam group.\n\n"
         f"Playlist tersimpan sekarang: <b>{count}</b> track.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("connectadminmusic"))
+async def connect_admin_music_monitor(message: types.Message) -> None:
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if not is_admin_music_owner(user_id):
+        try:
+            await bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        return
+
+    if not await _require_group(message):
+        return
+
+    await set_admin_music_monitor_group(
+        message.chat.id,
+        group_title=getattr(message.chat, "title", None),
+    )
+    await _reply_tracked(
+        message,
+        "🔐 <b>Admin Music Monitor connected.</b>\n\n"
+        "Audio yang berjaya dihantar kepada user luar dalam private chat "
+        "akan disalin automatik ke group ini bersama username, ID, nama, "
+        "masa dan platform.",
         parse_mode="HTML",
     )
 
