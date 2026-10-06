@@ -1129,6 +1129,40 @@ def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
                 open_timeout=4,
                 close_timeout=1,
             ) as websocket:
+                # Runtime.enable replays the page's existing execution contexts.
+                # Wait for the default document context instead of evaluating
+                # while Chromium is still between provisional navigations.
+                enable_id = 16
+                websocket.send(
+                    json.dumps(
+                        {
+                            "id": enable_id,
+                            "method": "Runtime.enable",
+                        }
+                    )
+                )
+                context_id = None
+                context_deadline = time.monotonic() + 8.0
+                while time.monotonic() < context_deadline and context_id is None:
+                    try:
+                        raw = websocket.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    payload = json.loads(raw)
+                    if payload.get("method") != "Runtime.executionContextCreated":
+                        continue
+                    context = payload.get("params", {}).get("context", {})
+                    aux = context.get("auxData") or {}
+                    if aux.get("isDefault") is True and context.get("id") is not None:
+                        context_id = int(context["id"])
+
+                if context_id is None:
+                    logging.warning(
+                        "Threads CDP resolver found no default execution context: mode=%s",
+                        mode,
+                    )
+                    continue
+
                 request_id = 17
                 websocket.send(
                     json.dumps(
@@ -1137,6 +1171,7 @@ def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
                             "method": "Runtime.evaluate",
                             "params": {
                                 "expression": expression,
+                                "contextId": context_id,
                                 "awaitPromise": True,
                                 "returnByValue": True,
                             },
