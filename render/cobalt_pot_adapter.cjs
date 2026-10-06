@@ -2926,7 +2926,12 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       // shell for /share/ aliases, so avoid the old multi-attempt crawler
       // waterfall. Try the preview UA once, then media providers directly.
       if (shareAlias) {
-        effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+        // Resolve the opaque mobile /share/ token at an edge location first.
+        // Render's own IP currently receives the generic Threads SPA shell.
+        effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+        }
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaFxThreads(mediaUrl);
         }
