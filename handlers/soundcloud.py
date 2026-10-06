@@ -66,6 +66,7 @@ from services.media.delivery import (
 from services.media.audio_flow import run_audio_flow
 from services.media.music_download import send_social_fast_to_telegram
 from services.admin_music_monitor import mirror_private_audio_to_admin_group
+from services.private_music_playlist import record_private_audio
 from services.music_group_dedupe import duplicate_keeper_message_id
 from services.storage.music_cache import get_cached_social_audio, store_cached_social_audio
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
@@ -280,19 +281,32 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
         async def _reply_audio_with_admin_monitor(**kwargs):
             sent = await message.reply_audio(**kwargs)
             audio = getattr(sent, "audio", None)
+            private_title = (
+                kwargs.get("title")
+                or getattr(audio, "title", None)
+                or getattr(audio, "file_name", None)
+            )
+            private_performer = (
+                kwargs.get("performer")
+                or getattr(audio, "performer", None)
+            )
+            private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
+            await record_private_audio(
+                message,
+                service="soundcloud",
+                source_url=source_url,
+                file_id=getattr(audio, "file_id", None),
+                audio_message_id=getattr(sent, "message_id", None),
+                title=private_title,
+                performer=private_performer,
+                duration=private_duration,
+            )
             await mirror_private_audio_to_admin_group(
                 message,
                 file_id=getattr(audio, "file_id", None),
-                title=(
-                    kwargs.get("title")
-                    or getattr(audio, "title", None)
-                    or getattr(audio, "file_name", None)
-                ),
-                performer=(
-                    kwargs.get("performer")
-                    or getattr(audio, "performer", None)
-                ),
-                duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+                title=private_title,
+                performer=private_performer,
+                duration=private_duration,
                 platform="SoundCloud",
             )
             return sent
@@ -410,6 +424,16 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                     duration=duration,
                 )
                 if not group_music_connected:
+                    await record_private_audio(
+                        message,
+                        service="soundcloud",
+                        source_url=source_url,
+                        file_id=file_id,
+                        audio_message_id=message_id,
+                        title=title,
+                        performer=performer,
+                        duration=duration,
+                    )
                     await mirror_private_audio_to_admin_group(
                         message,
                         file_id=file_id,

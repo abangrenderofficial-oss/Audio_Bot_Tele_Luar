@@ -41,6 +41,7 @@ from services.inline.album_links import create_inline_album_request
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
 from services.admin_music_monitor import mirror_private_audio_to_admin_group
+from services.private_music_playlist import record_private_audio
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
 from services.music_group_dedupe import duplicate_keeper_message_id
 from services.media.delivery import send_audio_with_thumbnail
@@ -614,19 +615,32 @@ async def process_music_link(
     async def _reply_audio_with_admin_monitor(**kwargs):
         sent = await message.reply_audio(**kwargs)
         audio = getattr(sent, "audio", None)
+        private_title = (
+            kwargs.get("title")
+            or getattr(audio, "title", None)
+            or getattr(audio, "file_name", None)
+        )
+        private_performer = (
+            kwargs.get("performer")
+            or getattr(audio, "performer", None)
+        )
+        private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
+        await record_private_audio(
+            message,
+            service=service_name,
+            source_url=source_url,
+            file_id=getattr(audio, "file_id", None),
+            audio_message_id=getattr(sent, "message_id", None),
+            title=private_title,
+            performer=private_performer,
+            duration=private_duration,
+        )
         await mirror_private_audio_to_admin_group(
             message,
             file_id=getattr(audio, "file_id", None),
-            title=(
-                kwargs.get("title")
-                or getattr(audio, "title", None)
-                or getattr(audio, "file_name", None)
-            ),
-            performer=(
-                kwargs.get("performer")
-                or getattr(audio, "performer", None)
-            ),
-            duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+            title=private_title,
+            performer=private_performer,
+            duration=private_duration,
             platform=monitor_platform,
         )
         return sent
@@ -958,6 +972,16 @@ async def process_music_link(
                         business_connection_id=business_id,
                     )
                     if not group_music_connected:
+                        await record_private_audio(
+                            message,
+                            service="youtube",
+                            source_url=source_url,
+                            file_id=fast_result.get("file_id"),
+                            audio_message_id=fast_result.get("message_id"),
+                            title=fast_title,
+                            performer=fast_performer,
+                            duration=fast_duration,
+                        )
                         await mirror_private_audio_to_admin_group(
                             message,
                             file_id=fast_result.get("file_id"),
@@ -1186,6 +1210,16 @@ async def process_music_link(
                         business_connection_id=business_id,
                     )
                     if not group_music_connected:
+                        await record_private_audio(
+                            message,
+                            service=service_name,
+                            source_url=source_url,
+                            file_id=social_result.get("file_id"),
+                            audio_message_id=social_result.get("message_id"),
+                            title=social_title,
+                            performer=social_performer,
+                            duration=social_duration,
+                        )
                         await mirror_private_audio_to_admin_group(
                             message,
                             file_id=social_result.get("file_id"),
