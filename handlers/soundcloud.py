@@ -64,6 +64,7 @@ from services.media.delivery import (
     send_audio_with_thumbnail,
 )
 from services.media.audio_flow import run_audio_flow
+from services.media.music_download import send_social_fast_to_telegram
 from services.storage.music_cache import get_cached_social_audio, store_cached_social_audio
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
 from services.platforms import soundcloud_media as soundcloud_platform
@@ -271,6 +272,74 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             )
             return
 
+        # Primary SoundCloud path: bypass Cobalt and let the shared
+        # external worker resolve/download public SoundCloud audio directly.
+        # This handles on.soundcloud.com share links and falls back through WARP
+        # inside the worker when direct egress is blocked.
+        try:
+            await safe_edit_text(
+                status_message,
+                "🎧 SoundCloud • sedang ambil audio...",
+            )
+            fast_result = await send_social_fast_to_telegram(
+                source_url,
+                source="soundcloud",
+                chat_id=message.chat.id,
+                business_connection_id=business_id,
+            )
+        except Exception as exc:
+            logging.warning(
+                "SoundCloud fast worker failed; falling back to Cobalt: %s",
+                exc,
+            )
+        else:
+            file_id = str(fast_result.get("file_id") or "")
+            message_id = fast_result.get("message_id")
+            title = str(fast_result.get("title") or "SoundCloud Audio")
+            performer = str(fast_result.get("performer") or "SoundCloud")
+            duration = fast_result.get("duration")
+            file_size = fast_result.get("file_size")
+
+            if file_id:
+                try:
+                    await store_cached_social_audio(
+                        "soundcloud",
+                        source_url,
+                        telegram_file_id=file_id,
+                        variant="fast_original",
+                        title=title,
+                        performer=performer,
+                        duration_seconds=(
+                            float(duration) if duration is not None else None
+                        ),
+                        file_size_bytes=(
+                            int(file_size) if file_size is not None else None
+                        ),
+                    )
+                except Exception as cache_error:
+                    logging.warning(
+                        "SoundCloud persistent fast cache store failed: %s",
+                        cache_error,
+                    )
+
+                await _remember_group_audio(
+                    file_id=file_id,
+                    audio_message_id=(
+                        int(message_id) if message_id is not None else None
+                    ),
+                    title=title,
+                    performer=performer,
+                    duration=duration,
+                )
+                request_lease.mark_success()
+                await maybe_delete_user_message(
+                    message,
+                    user_settings.get("delete_message"),
+                )
+                return
+
+        # Compatibility fallback: keep the existing Cobalt route for cases
+        # where the direct SoundCloud extractor cannot resolve a track.
         async def _send_cached(file_id: str):
             await safe_edit_text(status_message, bm.uploading_status())
             await send_chat_action_if_needed(
