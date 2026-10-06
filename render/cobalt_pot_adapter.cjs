@@ -1726,16 +1726,22 @@ function decodeHtmlAttr(value) {
 function extractDlpandaDownloadCandidates(html) {
   const candidates = [];
   const seen = new Set();
-  const attrs = ["data-download-url", "data-bridge-url", "data-worker-url"];
+  const patterns = [
+    ["data-download-url", /data-download-url=["']([^"']+)["']/gi],
+    ["data-bridge-url", /data-bridge-url=["']([^"']+)["']/gi],
+    ["data-worker-url", /data-worker-url=["']([^"']+)["']/gi],
+  ];
 
-  for (const attr of attrs) {
-    const rx = new RegExp(attr + "=[\"']([^\"']+)[\"']", "gi");
+  for (const [attr, rx] of patterns) {
     for (const match of html.matchAll(rx)) {
       const url = decodeHtmlAttr(match[1]);
       if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
       seen.add(url);
       const contextStart = Math.max(0, (match.index || 0) - 500);
-      const contextEnd = Math.min(html.length, (match.index || 0) + match[0].length + 500);
+      const contextEnd = Math.min(
+        html.length,
+        (match.index || 0) + match[0].length + 500
+      );
       const context = html.slice(contextStart, contextEnd).toLowerCase();
       const kind =
         /audio|music|sound|song|track/.test(context) ||
@@ -1745,7 +1751,12 @@ function extractDlpandaDownloadCandidates(html) {
       candidates.push({
         url,
         kind,
-        score: attr === "data-download-url" ? 1800 : attr === "data-bridge-url" ? 1700 : 1600,
+        score:
+          attr === "data-download-url"
+            ? 1800
+            : attr === "data-bridge-url"
+              ? 1700
+              : 1600,
         pathHint: "dlpanda." + attr,
       });
     }
