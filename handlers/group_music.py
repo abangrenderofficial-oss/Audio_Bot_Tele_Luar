@@ -48,7 +48,7 @@ async def _is_group_admin(message: types.Message) -> bool:
 async def _require_group_admin(message: types.Message) -> bool:
     if await _is_group_admin(message):
         return True
-    await message.reply("Command ni hanya admin group boleh guna.")
+    await _reply_tracked(message, "Command ni hanya admin group boleh guna.")
     return False
 
 
@@ -131,11 +131,11 @@ async def _reply_tracked(
 async def connect_music_group(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _ensure_group_record(message)
     await _remember_command(message)
     if not await _require_group_admin(message):
         return
 
-    await _ensure_group_record(message)
     await db.set_music_group_connected(
         message.chat.id,
         connected=True,
@@ -239,6 +239,7 @@ async def clear_music_links(message: types.Message) -> None:
 async def clear_all_group_text(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    await _remember_command(message)
     if not await _require_group_admin(message):
         return
     if not await _connected(message):
