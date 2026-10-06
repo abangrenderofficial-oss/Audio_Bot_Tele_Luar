@@ -65,3 +65,13 @@ def test_extract_supported_link_accepts_threads_share_links():
         "threads",
         "https://www.threads.com/share/BAV6glx_i6/",
     )
+
+
+
+def test_extract_x_video_link_canonicalizes_to_tweet_url():
+    assert extract_supported_link(
+        "https://x.com/munimunisalt/status/1983827496899637543/video/1?s=46"
+    ) == (
+        "twitter",
+        "https://x.com/munimunisalt/status/1983827496899637543",
+    )
