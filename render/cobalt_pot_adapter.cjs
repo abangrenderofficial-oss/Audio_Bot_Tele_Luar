@@ -1695,6 +1695,57 @@ function cleanThreadsEmbedValue(value) {
     .trim();
 }
 
+function resolveThreadsShareViaWarpCrawler(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  try {
+    const result = spawnSync(
+      "curl",
+      [
+        "-sS",
+        "-L",
+        "--max-redirs", "5",
+        "--max-time", "18",
+        "--socks5-hostname", `${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}`,
+        "-A", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "-H", "Accept-Language: en",
+        "-o", "/dev/null",
+        "-w", "%{url_effective}",
+        mediaUrl,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 22000,
+        maxBuffer: 256 * 1024,
+      }
+    );
+
+    const finalUrl = String(result.stdout || "").trim();
+    const match = finalUrl.match(
+      /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+    );
+    if (result.status === 0 && match) {
+      console.log(
+        "[SOCIAL-WORKER] threads WARP crawler resolved share -> " + match[0]
+      );
+      return match[0];
+    }
+
+    console.warn(
+      "[SOCIAL-WORKER] threads WARP crawler miss rc=" +
+      String(result.status) + " final=" + (finalUrl.slice(0, 240) || "-") +
+      " stderr=" + String(result.stderr || "").trim().slice(0, 240)
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads WARP crawler failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaFixThreads(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -3203,10 +3254,12 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       // shell for /share/ aliases, so avoid the old multi-attempt crawler
       // waterfall. Try the preview UA once, then media providers directly.
       if (shareAlias) {
-        // FixThreads resolves the opaque share token from a separate network.
-        // Its /share route exposes the canonical post in a redirect even when
-        // its own media lookup cannot finish.
-        effectiveMediaUrl = await resolveThreadsShareViaFixThreads(mediaUrl);
+        // First try Threads' documented crawler-style redirect through the
+        // worker's WARP egress. Render's native IP receives only the SPA shell.
+        effectiveMediaUrl = resolveThreadsShareViaWarpCrawler(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaFixThreads(mediaUrl);
+        }
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
         }
