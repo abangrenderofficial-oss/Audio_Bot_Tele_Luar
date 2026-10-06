@@ -664,6 +664,11 @@ function isAllowedSocialUrl(source, value) {
         host.endsWith(".x.com") ||
         host === "twitter.com" ||
         host.endsWith(".twitter.com"),
+      soundcloud:
+        host === "soundcloud.com" ||
+        host.endsWith(".soundcloud.com") ||
+        host === "on.soundcloud.com" ||
+        host === "soundcloud.app.goo.gl",
     };
     return Boolean(allowed[String(source || "").toLowerCase()]);
   } catch {
@@ -900,6 +905,7 @@ function socialSourceLabel(source) {
     instagram: "Instagram",
     threads: "Threads",
     twitter: "X",
+    soundcloud: "SoundCloud",
   }[String(source || "").toLowerCase()] || "Social";
 }
 
