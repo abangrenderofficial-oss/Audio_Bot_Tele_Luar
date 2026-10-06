@@ -639,10 +639,10 @@ async def resolve_threads_share_via_vxthreads(url: str) -> str | None:
 
 async def resolve_threads_share_via_railway(url: str) -> str | None:
     """Resolve opaque Threads share aliases from the existing Railway worker."""
-    base_url = (
-        (os.getenv("RAILWAY_YOUTUBE_WORKER_URL") or "").strip()
-        or "https://music-youtube-audio-worker-production.up.railway.app"
-    ).rstrip("/")
+    # Do not use RAILWAY_YOUTUBE_WORKER_URL here: production currently
+    # repoints that variable at the separate Render social worker. This resolver
+    # must hit the Railway function whose /threads-resolve route we control.
+    base_url = "https://music-youtube-audio-worker-production.up.railway.app"
     token = (
         (os.getenv("AR_MUSIC_WORKER_KEY_V3") or "").strip()
         or (os.getenv("YOUTUBE_WORKER_API_KEY") or "").strip()
