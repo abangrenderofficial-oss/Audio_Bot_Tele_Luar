@@ -1799,6 +1799,86 @@ async function fetchFxThreadsMedia(mediaUrl, prefix) {
   throw new Error(lastError);
 }
 
+async function fetchCurlXThreadsMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const response = await fetch("https://www.curl-x.com/api/extract", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "user-agent": "AbangRender-MusicBot/1.0",
+    },
+    body: JSON.stringify({ url: mediaUrl }),
+    signal: AbortSignal.timeout(30000),
+  });
+  const raw = await response.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+
+  if (!response.ok || !data || data?.error) {
+    throw new Error(
+      "curl-x failed status=" + response.status +
+      " code=" + String(data?.code || "-") +
+      ": " + String(data?.error || raw || "invalid response").slice(0, 500)
+    );
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const add = (url, kind, score) => {
+    const value = String(url || "").trim();
+    if (!/^https?:\/\//i.test(value) || seen.has(value)) return;
+    seen.add(value);
+    candidates.push({ url: value, kind, score });
+  };
+
+  for (const item of Array.isArray(data?.media) ? data.media : []) {
+    const type = String(item?.type || "").toLowerCase();
+    const kind = type === "audio" ? "audio" : "video";
+    for (const variant of Array.isArray(item?.variants) ? item.variants : []) {
+      const contentType = String(variant?.contentType || "").toLowerCase();
+      const variantKind = contentType.startsWith("audio/") ? "audio" : kind;
+      const score =
+        (variantKind === "video" ? 2000 : 1700) +
+        Math.min(Number(variant?.bitrate || 0) / 10000, 500);
+      add(variant?.url, variantKind, score);
+    }
+    add(item?.url, kind, kind === "video" ? 1800 : 1600);
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  let lastError = "curl-x returned no usable audio media";
+  for (const candidate of candidates.slice(0, 16)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate, prefix, "", { referer: "https://www.threads.com/" }
+      );
+      console.log(
+        `[SOCIAL-WORKER] threads curl-x ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title: String(data?.text || data?.title || "").trim().slice(0, 180) ||
+            (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+          performer: String(data?.author || "").trim() || "Threads",
+          duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  console.warn(
+    "[SOCIAL-WORKER] threads curl-x no media platform=" +
+    String(data?.platform || "-") + " media_count=" +
+    (Array.isArray(data?.media) ? data.media.length : 0)
+  );
+  throw new Error(lastError);
+}
+
 async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const endpoint = "https://api.microlink.io?url=" + encodeURIComponent(mediaUrl);
@@ -2865,6 +2945,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : shareAlias
           ? [
+              ["curl-x", fetchCurlXThreadsMedia],
               ["Microlink", fetchMicrolinkThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
               ["vxThreads", fetchVxThreadsMedia],
