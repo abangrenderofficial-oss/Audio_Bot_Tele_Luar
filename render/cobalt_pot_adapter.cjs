@@ -1294,6 +1294,226 @@ async function fetchThreadsDlMedia(mediaUrl, prefix) {
   };
 }
 
+
+function parsePostCopilotMcpPayload(raw) {
+  const values = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("event:")) continue;
+    const payload = trimmed.startsWith("data:")
+      ? trimmed.slice(5).trim()
+      : trimmed;
+    if (!payload || payload === "[DONE]") continue;
+    try { values.push(JSON.parse(payload)); } catch {}
+  }
+  if (!values.length) {
+    try { values.push(JSON.parse(String(raw || ""))); } catch {}
+  }
+  return values.length ? values[values.length - 1] : null;
+}
+
+function collectPostCopilotUrls(value, output = []) {
+  if (typeof value === "string") {
+    const matches = value.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
+    for (let item of matches) {
+      item = item.replace(/[),.;\]}]+$/g, "");
+      try { item = item.replace(/\\u0026/g, "&").replace(/\\\//g, "/"); } catch {}
+      if (!output.includes(item)) output.push(item);
+    }
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length < 200000) {
+      try { collectPostCopilotUrls(JSON.parse(trimmed), output); } catch {}
+    }
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectPostCopilotUrls(item, output);
+    return output;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectPostCopilotUrls(item, output);
+  }
+  return output;
+}
+
+async function fetchPostCopilotThreadsMedia(mediaUrl, prefix) {
+  const endpoint = "https://postcopilot.ai/mcp";
+  const protocolVersion = "2025-06-18";
+  const commonHeaders = {
+    "content-type": "application/json",
+    "accept": "application/json, text/event-stream",
+    "mcp-protocol-version": protocolVersion,
+    "user-agent": "AbangRender-MusicBot/1.0",
+  };
+  const started = Date.now();
+
+  const initResponse = await fetch(endpoint, {
+    method: "POST",
+    headers: commonHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "init",
+      method: "initialize",
+      params: {
+        protocolVersion,
+        capabilities: {},
+        clientInfo: { name: "AbangRender-MusicBot", version: "1.0" },
+      },
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const initRaw = await initResponse.text();
+  const initPayload = parsePostCopilotMcpPayload(initRaw);
+  if (!initResponse.ok || initPayload?.error) {
+    throw new Error(
+      `PostCopilot MCP initialize failed status=${initResponse.status}: ${String(
+        initPayload?.error?.message || initRaw || "invalid response"
+      ).slice(0, 400)}`
+    );
+  }
+
+  const sessionId = String(initResponse.headers.get("mcp-session-id") || "").trim();
+  const headers = {
+    ...commonHeaders,
+    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+  };
+
+  try {
+    await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+        params: {},
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {}
+
+  const callResponse = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "threads-download",
+      method: "tools/call",
+      params: {
+        name: "postcopilot_download_video",
+        arguments: { url: mediaUrl },
+      },
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  const callRaw = await callResponse.text();
+  const callPayload = parsePostCopilotMcpPayload(callRaw);
+  if (!callResponse.ok || callPayload?.error) {
+    throw new Error(
+      `PostCopilot MCP call failed status=${callResponse.status}: ${String(
+        callPayload?.error?.message || callRaw || "invalid response"
+      ).slice(0, 500)}`
+    );
+  }
+
+  const urls = collectPostCopilotUrls(callPayload)
+    .filter((value) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === "https:" &&
+          !/(^|\.)threads\.(com|net)$/i.test(parsed.hostname) &&
+          parsed.hostname !== "postcopilot.ai";
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => {
+      const score = (value) =>
+        (/\.mp4(?:[?#]|$)/i.test(value) ? 8 : 0) +
+        (/video|fbcdn|cdninstagram/i.test(value) ? 4 : 0);
+      return score(b) - score(a);
+    });
+
+  if (!urls.length) {
+    const preview = JSON.stringify(callPayload || {}).slice(0, 900);
+    throw new Error(`PostCopilot returned no media URL: ${preview}`);
+  }
+
+  let lastError = "no usable media URL";
+  for (const candidate of urls.slice(0, 8)) {
+    let filePath = null;
+    try {
+      const mediaResponse = await fetch(candidate, {
+        redirect: "follow",
+        headers: {
+          "user-agent": "Mozilla/5.0",
+          "referer": "https://www.threads.com/",
+          "accept": "video/*,audio/*,application/octet-stream;q=0.9,*/*;q=0.1",
+        },
+        signal: AbortSignal.timeout(90000),
+      });
+      if (!mediaResponse.ok || !mediaResponse.body) {
+        lastError = `HTTP ${mediaResponse.status}`;
+        continue;
+      }
+      const contentType = String(
+        mediaResponse.headers.get("content-type") || ""
+      ).toLowerCase();
+      if (
+        contentType.includes("json") ||
+        contentType.includes("html") ||
+        contentType.startsWith("text/")
+      ) {
+        lastError = `non-media ${contentType || "unknown"}`;
+        continue;
+      }
+
+      filePath = `${prefix}.postcopilot.mp4`;
+      const file = fs.openSync(filePath, "w");
+      let total = 0;
+      try {
+        const reader = mediaResponse.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value?.byteLength) continue;
+          total += value.byteLength;
+          if (total > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+            try { await reader.cancel(); } catch {}
+            throw new Error("PostCopilot media exceeded safety limit");
+          }
+          fs.writeSync(file, Buffer.from(value));
+        }
+      } finally {
+        fs.closeSync(file);
+      }
+      if (total <= 0) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+        lastError = "empty media";
+        continue;
+      }
+
+      console.log(
+        `[SOCIAL-WORKER] threads PostCopilot ready bytes=${total} ms=${Date.now() - started}`
+      );
+      return {
+        filePath,
+        metadata: {
+          title: "Threads audio",
+          performer: "Threads",
+          duration: null,
+        },
+      };
+    } catch (error) {
+      if (filePath) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+      }
+      lastError = String(error?.message || error).slice(0, 300);
+    }
+  }
+
+  throw new Error(`PostCopilot media download failed: ${lastError}`);
+}
+
 function probeAudioCodec(filePath) {
   const result = spawnSync(
     "ffprobe",
@@ -1463,6 +1683,18 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           String(error?.message || error).slice(0, 1200)
         );
         clearOutputs();
+
+        try {
+          console.log("[SOCIAL-WORKER] threads PostCopilot fallback start");
+          threadsProvider = await fetchPostCopilotThreadsMedia(effectiveMediaUrl, prefix);
+          providerRawPath = threadsProvider.filePath;
+        } catch (postCopilotError) {
+          console.warn(
+            "[SOCIAL-WORKER] threads PostCopilot fallback failed:",
+            String(postCopilotError?.message || postCopilotError).slice(0, 1200)
+          );
+          clearOutputs();
+        }
       }
     }
 
