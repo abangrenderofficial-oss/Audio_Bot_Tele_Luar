@@ -1180,6 +1180,199 @@ async function resolveThreadsShareViaLinkExpander(mediaUrl) {
   return mediaUrl;
 }
 
+function collectThreadsHybridAssets(data) {
+  const candidates = [];
+  const seen = new Set();
+
+  const add = (url, kind, score, pathHint = "") => {
+    const value = String(url || "").trim().replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+    if (!/^https:\/\//i.test(value) || seen.has(value)) return;
+    seen.add(value);
+    candidates.push({ url: value, kind, score, pathHint });
+  };
+
+  const walk = (value, path = []) => {
+    if (typeof value === "string") {
+      if (!/^https:\/\//i.test(value.trim())) return;
+      const hint = path.join(".").toLowerCase();
+      const url = value.trim();
+      const audioExt = /\.(?:m4a|mp3|aac|ogg|opus|wav)(?:[?#]|$)/i.test(url);
+      const videoExt = /\.(?:mp4|m3u8|mov|webm)(?:[?#]|$)/i.test(url);
+      const audioHint = /audio|music|sound|song|track/.test(hint);
+      const videoHint = /video|play|cover|download|hd|sd/.test(hint);
+
+      if (audioExt || audioHint) add(url, "audio", 900 + (audioExt ? 80 : 0), hint);
+      if (videoExt || videoHint) add(url, "video", 1200 + (videoExt ? 120 : 0), hint);
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        const item = value[i];
+        if (item && typeof item === "object" && Number(item.mediaType) === 2) {
+          for (const key of ["video_url", "videoUrl", "url", "cover", "src", "download_url", "downloadUrl", "hd", "sd"]) {
+            if (typeof item[key] === "string") add(item[key], "video", 1600, `medias.${i}.${key}`);
+          }
+        }
+        walk(item, [...path, String(i)]);
+      }
+      return;
+    }
+
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        walk(item, [...path, key]);
+      }
+    }
+  };
+
+  walk(data);
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+function threadsMetadataFromPayload(data, fallbackKind = "video") {
+  const strings = [];
+  const walk = (value, path = []) => {
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (!text || /^https?:\/\//i.test(text)) return;
+      strings.push({ text, path: path.join(".").toLowerCase() });
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) walk(value[i], [...path, String(i)]);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) walk(item, [...path, key]);
+    }
+  };
+  walk(data);
+
+  const pick = (rx) => strings.find((item) => rx.test(item.path))?.text || "";
+  const title =
+    pick(/music.*title|audio.*title|track.*title|song.*title|sound.*title/) ||
+    pick(/music.*name|audio.*name|track.*name|song.*name|sound.*name/) ||
+    "";
+  const performer =
+    pick(/artist|music.*author|audio.*author|track.*artist|song.*artist/) ||
+    "";
+  const username = String(data?.username || "").trim().replace(/^@+/, "");
+  const postText = String(data?.text || "").replace(/\s+/g, " ").trim();
+
+  return {
+    title:
+      title ||
+      postText.slice(0, 180) ||
+      (fallbackKind === "audio"
+        ? (username ? `Threads music — @${username}` : "Threads music")
+        : (username ? `Original audio — @${username}` : "Threads audio")),
+    performer:
+      performer ||
+      (username ? `@${username}` : "Threads"),
+    duration: null,
+  };
+}
+
+async function downloadThreadsHybridAsset(candidate, prefix, proxyBase) {
+  const attempts = candidate.kind === "video"
+    ? [
+        {
+          name: "proxy",
+          url: `${proxyBase}?${new URLSearchParams({ url: candidate.url }).toString()}`,
+        },
+        { name: "direct", url: candidate.url },
+      ]
+    : [
+        { name: "direct", url: candidate.url },
+        {
+          name: "proxy",
+          url: `${proxyBase}?${new URLSearchParams({ url: candidate.url }).toString()}`,
+        },
+      ];
+
+  let lastError = "no usable asset";
+  for (const attempt of attempts) {
+    let filePath = "";
+    try {
+      const response = await fetch(attempt.url, {
+        redirect: "follow",
+        headers: {
+          "user-agent": "Mozilla/5.0",
+          "referer": "https://www.threads.com/",
+          "accept": "video/*,audio/*,application/octet-stream;q=0.9,*/*;q=0.1",
+        },
+        signal: AbortSignal.timeout(90000),
+      });
+      if (!response.ok || !response.body) {
+        lastError = `${attempt.name} HTTP ${response.status}`;
+        continue;
+      }
+
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      if (
+        contentType.includes("json") ||
+        contentType.includes("html") ||
+        contentType.startsWith("text/") ||
+        contentType.startsWith("image/")
+      ) {
+        lastError = `${attempt.name} non-audio media ${contentType || "unknown"}`;
+        continue;
+      }
+
+      const extension =
+        contentType.includes("audio/mpeg") ? "mp3" :
+        contentType.includes("audio/mp4") || contentType.includes("audio/x-m4a") ? "m4a" :
+        contentType.includes("audio/aac") ? "aac" :
+        contentType.includes("video/webm") ? "webm" :
+        contentType.includes("video/") ? "mp4" :
+        candidate.kind === "audio" ? "m4a" : "mp4";
+      filePath = `${prefix}.threads.${candidate.kind}.${extension}`;
+
+      const file = fs.openSync(filePath, "w");
+      let total = 0;
+      try {
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value?.byteLength) continue;
+          total += value.byteLength;
+          if (total > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+            try { await reader.cancel(); } catch {}
+            throw new Error("Threads media exceeded safety limit");
+          }
+          fs.writeSync(file, Buffer.from(value));
+        }
+      } finally {
+        fs.closeSync(file);
+      }
+
+      if (total <= 0) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+        lastError = `${attempt.name} empty media`;
+        continue;
+      }
+
+      const codec = probeAudioCodec(filePath);
+      if (!codec) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+        lastError = `${attempt.name} asset has no audio stream`;
+        continue;
+      }
+
+      return { filePath, bytes: total, codec, route: attempt.name };
+    } catch (error) {
+      if (filePath) {
+        try { fs.rmSync(filePath, { force: true }); } catch {}
+      }
+      lastError = String(error?.message || error).slice(0, 400);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
 async function fetchThreadsDlMedia(mediaUrl, prefix) {
   const apiUrl = "https://www.threadsdl.app/api/threads";
   const proxyBase = "https://www.threadsdl.app/api/proxy";
@@ -1200,100 +1393,46 @@ async function fetchThreadsDlMedia(mediaUrl, prefix) {
   let data = null;
   try { data = JSON.parse(raw); } catch {}
 
-  if (!apiResponse.ok || !data || !Array.isArray(data.medias)) {
+  if (!apiResponse.ok || !data) {
     throw new Error(
       `ThreadsDL API failed status=${apiResponse.status}: ${String(raw || "invalid response").slice(0, 500)}`
     );
   }
 
-  const video = data.medias.find(
-    (item) =>
-      item &&
-      Number(item.mediaType) === 2 &&
-      typeof item.cover === "string" &&
-      /^https:\/\//i.test(item.cover)
-  );
-  if (!video) {
-    throw new Error("ThreadsDL API returned no downloadable video");
+  const candidates = collectThreadsHybridAssets(data);
+  if (!candidates.length) {
+    throw new Error("ThreadsDL returned no video or standalone audio asset");
   }
 
-  const proxyUrl = `${proxyBase}?${new URLSearchParams({ url: video.cover }).toString()}`;
-  const mediaResponse = await fetch(proxyUrl, {
-    redirect: "follow",
-    headers: {
-      "user-agent": "Mozilla/5.0",
-      "referer": "https://www.threads.com/",
-      "accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.1",
-    },
-    signal: AbortSignal.timeout(90000),
-  });
+  // Hybrid rule:
+  // 1) Prefer a video that already contains audio.
+  // 2) If there is no usable video audio, use the standalone Threads
+  //    music/audio asset (important for image + music posts).
+  const ordered = [
+    ...candidates.filter((item) => item.kind === "video"),
+    ...candidates.filter((item) => item.kind === "audio"),
+  ];
 
-  if (!mediaResponse.ok || !mediaResponse.body) {
-    throw new Error(
-      `ThreadsDL media proxy failed status=${mediaResponse.status}`
-    );
-  }
-
-  const contentType = String(
-    mediaResponse.headers.get("content-type") || ""
-  ).toLowerCase();
-  if (
-    contentType.includes("json") ||
-    contentType.includes("html") ||
-    contentType.startsWith("text/")
-  ) {
-    const detail = await mediaResponse.text().catch(() => "");
-    throw new Error(
-      `ThreadsDL media proxy returned ${contentType || "non-media"}: ${detail.slice(0, 400)}`
-    );
-  }
-
-  const filePath = `${prefix}.threads.mp4`;
-  const file = fs.openSync(filePath, "w");
-  let total = 0;
-  try {
-    const reader = mediaResponse.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value?.byteLength) continue;
-      total += value.byteLength;
-      if (total > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
-        try { await reader.cancel(); } catch {}
-        throw new Error("ThreadsDL media exceeded safety limit");
-      }
-      fs.writeSync(file, Buffer.from(value));
+  let lastError = "no usable Threads audio";
+  for (const candidate of ordered.slice(0, 16)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(candidate, prefix, proxyBase);
+      const metadata = threadsMetadataFromPayload(data, candidate.kind);
+      console.log(
+        `[SOCIAL-WORKER] threads hybrid ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} route=${downloaded.route} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata,
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
     }
-  } finally {
-    fs.closeSync(file);
   }
 
-  if (total <= 0) {
-    try { fs.rmSync(filePath, { force: true }); } catch {}
-    throw new Error("ThreadsDL media download was empty");
-  }
-
-  const username = String(data.username || "")
-    .trim()
-    .replace(/^@+/, "");
-  const text = String(data.text || "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  console.log(
-    `[SOCIAL-WORKER] threads ThreadsDL ready bytes=${total} ms=${Date.now() - started} username=${username || "-"}`
-  );
-
-  return {
-    filePath,
-    metadata: {
-      title: text.slice(0, 180) || (username ? `Original audio — @${username}` : "Threads audio"),
-      performer: username ? `@${username}` : "Threads",
-      duration: null,
-    },
-  };
+  throw new Error(`ThreadsDL hybrid extraction failed: ${lastError}`);
 }
-
 
 function parsePostCopilotMcpPayload(raw) {
   const values = [];
