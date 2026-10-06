@@ -29,7 +29,10 @@ from handlers.utils import (
     should_skip_duplicate_business_message,
     with_message_logging,
 )
-from handlers.youtube import download_mp3_with_ytdlp_metrics, search_youtube_track
+from handlers.youtube import (
+    download_mp3_with_ytdlp_metrics,
+    search_youtube_track_fast,
+)
 from services.logger import logger as logging, summarize_url_for_log
 from services.media.audio_flow import run_audio_flow
 from services.media.audio_metadata import (
@@ -243,13 +246,31 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
             if track is not None and youtube_track is not None:
                 return True
 
+            await safe_edit_text(
+                status_message,
+                "🎧 Spotify • sedang baca metadata...",
+            )
             track = await get_spotify_track(source_url)
             query = " - ".join(
                 value
                 for value in (track.get("artists"), track.get("title"))
                 if value and value != "Unknown artist"
             )
-            youtube_track = await asyncio.to_thread(search_youtube_track, query)
+
+            await safe_edit_text(
+                status_message,
+                "🔎 Spotify • sedang cari padanan audio...",
+            )
+            search_started = asyncio.get_running_loop().time()
+            youtube_track = await asyncio.to_thread(
+                search_youtube_track_fast,
+                query,
+            )
+            logging.info(
+                "Spotify timing: stage=flat_youtube_search seconds=%.2f hit=%s",
+                asyncio.get_running_loop().time() - search_started,
+                bool(youtube_track),
+            )
             if not youtube_track or not youtube_track.get("webpage_url"):
                 await message.reply(bm.spotify_source_not_found())
                 return False
@@ -321,8 +342,9 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
         try:
             await safe_edit_text(
                 status_message,
-                "🎧 Spotify • sedang sediakan audio...",
+                "⬆️ Spotify • source jumpa, sedang hantar audio...",
             )
+            worker_started = asyncio.get_running_loop().time()
             fast_result = await send_youtube_fast_to_telegram(
                 youtube_url,
                 chat_id=message.chat.id,
@@ -332,6 +354,11 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     float(duration) if duration is not None else None
                 ),
                 business_connection_id=business_id,
+            )
+            logging.info(
+                "Spotify timing: stage=fast_worker seconds=%.2f bytes=%s",
+                asyncio.get_running_loop().time() - worker_started,
+                fast_result.get("file_size"),
             )
         except Exception as exc:
             logging.warning(
