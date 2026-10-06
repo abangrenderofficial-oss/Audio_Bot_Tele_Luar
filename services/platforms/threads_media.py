@@ -2360,6 +2360,82 @@ async def fetch_fxthreads_canonical(share_id: str) -> str | None:
     return None
 
 
+def _resolve_threads_share_via_warp_googlebot_sync(url: str) -> str | None:
+    """Try the same public Googlebot request through the local WARP SOCKS path."""
+    curl = shutil.which("curl")
+    if not curl:
+        return None
+
+    marker = "__THREADS_FINAL_URL__="
+    command = [
+        curl,
+        "-sS",
+        "-L",
+        "--max-time",
+        "20",
+        "--proxy",
+        "socks5h://127.0.0.1:1080",
+        "-A",
+        THREADS_PAGE_HEADERS["User-Agent"],
+        "-H",
+        "Accept-Language: en",
+        "-H",
+        f"Accept: {THREADS_PAGE_HEADERS['Accept']}",
+        "-w",
+        f"\\n{marker}%{{url_effective}}",
+        url,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=24,
+            check=False,
+        )
+    except Exception as exc:
+        logging.info("Threads WARP Googlebot resolver failed to run: %s", exc)
+        return None
+
+    output = completed.stdout or ""
+    if marker not in output:
+        logging.info(
+            "Threads WARP Googlebot resolver miss: rc=%s stderr=%s",
+            completed.returncode,
+            re.sub(r"\\s+", " ", completed.stderr or "")[:220],
+        )
+        return None
+
+    page, final_url = output.rsplit(marker, 1)
+    final_url = final_url.strip()
+    resolved = strip_threads_url(final_url)
+    if extract_threads_post_code(resolved):
+        logging.info(
+            "Resolved Threads share URL via WARP Googlebot redirect: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    resolved = _extract_threads_post_url_from_html(page)
+    if resolved:
+        logging.info(
+            "Resolved Threads share URL via WARP Googlebot SSR: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    logging.info(
+        "Threads WARP Googlebot resolver miss: rc=%s final=%s bytes=%s",
+        completed.returncode,
+        final_url[:220] or "-",
+        len(page),
+    )
+    return None
+
+
 async def resolve_threads_share_fast(url: str) -> str:
     """Resolve a Threads /share/<id>/ alias with the public crawler path first.
 
@@ -2398,6 +2474,14 @@ async def resolve_threads_share_fast(url: str) -> str:
             candidate,
             exc,
         )
+
+    # A different egress can matter for Threads' anonymous serving rules.
+    resolved = await asyncio.to_thread(
+        _resolve_threads_share_via_warp_googlebot_sync,
+        candidate,
+    )
+    if resolved:
+        return resolved
 
     # Fallback: exact MV3 extension-worker fetch semantics.
     resolved = await asyncio.to_thread(
