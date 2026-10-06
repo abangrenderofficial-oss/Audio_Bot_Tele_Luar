@@ -1729,7 +1729,7 @@ function extractDlpandaDownloadCandidates(html) {
   const attrs = ["data-download-url", "data-bridge-url", "data-worker-url"];
 
   for (const attr of attrs) {
-    const rx = new RegExp(attr + '=["\\']([^"\\']+)["\\']', "gi");
+    const rx = new RegExp(attr + "=[\"']([^\"']+)[\"']", "gi");
     for (const match of html.matchAll(rx)) {
       const url = decodeHtmlAttr(match[1]);
       if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
