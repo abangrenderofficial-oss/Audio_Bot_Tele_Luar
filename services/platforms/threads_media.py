@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Iterator
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from services.logger import logger as logging
 from services.platforms import CobaltMediaService
@@ -137,6 +137,79 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
     ) as response:
         response.raise_for_status()
         return str(response.url), await response.text()
+
+
+async def resolve_threads_share_via_manual_redirect(url: str) -> str | None:
+    """Walk Threads' raw GET redirect chain with a non-browser user agent."""
+    session = await get_http_session()
+    current = (url or "").strip()
+
+    for hop in range(5):
+        try:
+            async with session.get(
+                current,
+                headers={
+                    "Accept": "*/*",
+                    "User-Agent": "curl/8.5.0",
+                },
+                allow_redirects=False,
+                timeout=10,
+            ) as response:
+                location = (response.headers.get("Location") or "").strip()
+                status = response.status
+        except Exception as exc:
+            logging.info(
+                "Threads manual redirect resolver request failed: hop=%s error=%s",
+                hop,
+                exc,
+            )
+            return None
+
+        if not location:
+            logging.info(
+                "Threads manual redirect resolver stopped: hop=%s status=%s no_location=true",
+                hop,
+                status,
+            )
+            return None
+
+        next_url = urljoin(current, location)
+        try:
+            parsed = urlparse(next_url)
+        except Exception:
+            return None
+        host = parsed.netloc.lower().split(":", 1)[0]
+        if parsed.scheme != "https" or host not in {
+            "threads.com",
+            "www.threads.com",
+            "threads.net",
+            "www.threads.net",
+        }:
+            logging.info(
+                "Threads manual redirect resolver rejected target: hop=%s host=%s",
+                hop,
+                host,
+            )
+            return None
+
+        canonical = strip_threads_url(next_url)
+        if extract_threads_post_code(canonical) or re.match(
+            r"^/t/[A-Za-z0-9_-]+/?$",
+            parsed.path,
+            re.IGNORECASE,
+        ):
+            logging.info(
+                "Resolved Threads share URL via manual redirect: %s -> %s",
+                url,
+                canonical if extract_threads_post_code(canonical) else next_url,
+            )
+            return canonical if extract_threads_post_code(canonical) else next_url
+
+        if next_url == current:
+            return None
+        current = next_url
+
+    return None
 
 
 async def resolve_threads_share_via_head(url: str) -> str | None:
@@ -701,6 +774,10 @@ async def resolve_threads_url(
 
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
+
+    manual_resolved = await resolve_threads_share_via_manual_redirect(candidate)
+    if manual_resolved:
+        return manual_resolved
 
     head_resolved = await resolve_threads_share_via_head(candidate)
     if head_resolved:
