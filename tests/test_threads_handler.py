@@ -55,6 +55,26 @@ async def test_resolve_threads_share_url_from_escaped_page_metadata():
     assert resolved == "https://www.threads.com/@author/post/Meta_456"
 
 
+@pytest.mark.asyncio
+async def test_resolve_threads_share_url_from_embedded_post_object():
+    page = (
+        '<script type="application/json" data-sjs>'
+        '{"payload":{"post":{"code":"Embedded_789","caption":{"text":"Demo"},'
+        '"user":{"username":"share_author"}}}}'
+        "</script>"
+    )
+
+    async def fetch_share(_url: str) -> tuple[str, str]:
+        return "https://www.threads.com/share/BAV6glx_i6/", page
+
+    resolved = await resolve_threads_url(
+        "https://www.threads.com/share/BAV6glx_i6/",
+        fetch_share_func=fetch_share,
+    )
+
+    assert resolved == "https://www.threads.com/@share_author/post/Embedded_789"
+
+
 def test_parse_threads_post_html_extracts_only_target_post_and_best_variants():
     other = _post_payload(
         "other",

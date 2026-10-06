@@ -75,9 +75,30 @@ def _extract_threads_post_url_from_html(page: str) -> str | None:
     # inside JSON where slashes are escaped. Normalize both forms before scan.
     normalized_page = unescape(page or "").replace("\\/", "/")
     match = THREADS_POST_URL_SCAN_RE.search(normalized_page)
-    if not match:
-        return None
-    return strip_threads_url(match.group(0))
+    if match:
+        return strip_threads_url(match.group(0))
+
+    # Newer /share/<id>/ pages may keep the share URL as og:url while embedding
+    # the actual post object in Threads' data-sjs JSON. Recover code + username.
+    for payload in _iter_json_blobs(page):
+        for node in _walk_json(payload):
+            code = node.get("code")
+            user = node.get("user")
+            username = user.get("username") if isinstance(user, dict) else None
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", code):
+                continue
+            if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", username):
+                continue
+            if not (
+                node.get("caption")
+                or node.get("text_post_app_info")
+                or node.get("video_versions")
+                or node.get("image_versions2")
+                or node.get("carousel_media")
+            ):
+                continue
+            return f"https://www.threads.com/@{username}/post/{code}"
+    return None
 
 
 async def fetch_threads_share_page(url: str) -> tuple[str, str]:
