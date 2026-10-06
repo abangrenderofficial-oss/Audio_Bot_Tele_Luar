@@ -46,13 +46,12 @@ class PrivateChatGuardMiddleware(BaseMiddleware):
             return await handler(event, data)
         service, source_url = detected
 
-        checker = getattr(db, "is_music_group_connected", None)
-        if callable(checker):
-            try:
-                if await checker(event.chat.id):
-                    return await handler(event, data)
-            except Exception:
-                pass
+        try:
+            checker = getattr(db, "is_music_group_connected", None)
+            if callable(checker) and await checker(event.chat.id):
+                return await handler(event, data)
+        except Exception:
+            pass
 
         bot = data.get("bot")
         if not bot:
