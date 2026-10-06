@@ -971,6 +971,234 @@ async def resolve_threads_share_via_crawlers(url: str) -> str | None:
     return None
 
 
+def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
+    """Resolve a Threads share alias from a real Chromium extension page.
+
+    This mirrors Threads Clean Link more faithfully than spoofing headers:
+    fetch() runs from a chrome-extension:// origin with host permission,
+    credentials omitted and redirects followed. The page writes response.url
+    into its own hash so Python can read it from the local DevTools target list.
+    """
+    binary = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    if not binary:
+        logging.warning("Threads real-extension resolver unavailable: browser binary not found")
+        return None
+
+    extension_id = "hehokicokbgajpanjcajhmflaennnmdj"
+    # Public key from the open-source Threads Clean Link manifest. Keeping the
+    # same key gives the unpacked resolver the same stable extension origin.
+    extension_key = (
+        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwsulpvef7Tggdw39ft9kn/"
+        "AmboE4U5U+16uEir9kdo2CGvLqe2WbKLWnShqQj0XbDSMqASr8RgsSl6fkhSRfEW"
+        "t3qEuQ2QA9wQaeftPwoRGBUanuFTwIoeA6sNAoHJ8rhf+WTiwkA6IIBoYBNmNQrVg"
+        "PHicnkPkATbX2+yYTOD2Zwd78yAW4Wpd9kefIVr9TBVEtvq6xqvifm+tC6Y+/kKPY"
+        "CFUltUDoq+2ct9Yg1toVM/bWrhSiM+CX5jWEUSmRdFFid8dcjQDZ+HaIp5ALDHHeN"
+        "uo/xhM/X2bHZbsBLcUNgXQdskVB/D9qn9eIHrQ5l2OEdKOGktmh0KBXA1iCnwIDAQAB"
+    )
+
+    for mode, proxy in (
+        ("direct", None),
+        ("warp", "socks5://127.0.0.1:1080"),
+    ):
+        root_dir = tempfile.mkdtemp(prefix=f"threads-real-ext-{mode}-")
+        extension_dir = os.path.join(root_dir, "extension")
+        profile_dir = os.path.join(root_dir, "profile")
+        os.makedirs(extension_dir, exist_ok=True)
+        os.makedirs(profile_dir, exist_ok=True)
+        process: subprocess.Popen | None = None
+        try:
+            manifest = {
+                "manifest_version": 3,
+                "name": "Threads Share Resolver",
+                "version": "1.0",
+                "key": extension_key,
+                "host_permissions": [
+                    "https://*.threads.com/*",
+                    "https://*.threads.net/*",
+                ],
+            }
+            with open(
+                os.path.join(extension_dir, "manifest.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(manifest, handle)
+
+            html = """<!doctype html><meta charset="utf-8"><script src="resolver.js"></script>"""
+            with open(
+                os.path.join(extension_dir, "resolver.html"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(html)
+
+            script = f"""
+(async () => {{
+  const target = {json.dumps(url)};
+  try {{
+    const response = await fetch(target, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
+    }});
+    location.hash = "done=" + encodeURIComponent(response.url);
+  }} catch (error) {{
+    location.hash = "error=" + encodeURIComponent(
+      String(error && error.message || error || "fetch_failed")
+    );
+  }}
+}})();
+"""
+            with open(
+                os.path.join(extension_dir, "resolver.js"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(script)
+
+            resolver_url = (
+                f"chrome-extension://{extension_id}/resolver.html"
+            )
+            command = [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--no-first-run",
+                "--lang=en-US",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={profile_dir}",
+                f"--disable-extensions-except={extension_dir}",
+                f"--load-extension={extension_dir}",
+            ]
+            if proxy:
+                command.append(f"--proxy-server={proxy}")
+            command.append(resolver_url)
+
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+            port_file = os.path.join(profile_dir, "DevToolsActivePort")
+            port: int | None = None
+            startup_deadline = time.monotonic() + 7.0
+            while time.monotonic() < startup_deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with open(port_file, "r", encoding="utf-8") as handle:
+                        first_line = handle.readline().strip()
+                    if first_line.isdigit():
+                        port = int(first_line)
+                        break
+                except (FileNotFoundError, OSError):
+                    pass
+                time.sleep(0.1)
+
+            if not port:
+                logging.warning(
+                    "Threads real-extension resolver could not open DevTools: mode=%s rc=%s",
+                    mode,
+                    process.poll(),
+                )
+                continue
+
+            endpoint = f"http://127.0.0.1:{port}/json"
+            deadline = time.monotonic() + 15.0
+            last_target_url = ""
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen(endpoint, timeout=1.0) as response:
+                        targets = json.loads(
+                            response.read().decode("utf-8", errors="replace")
+                        )
+                    if isinstance(targets, list):
+                        for target in targets:
+                            if not isinstance(target, dict) or target.get("type") != "page":
+                                continue
+                            current = str(target.get("url") or "")
+                            if not current.startswith(resolver_url):
+                                continue
+                            last_target_url = current
+                            parsed = urlparse(current)
+                            fragment = parsed.fragment or ""
+                            if fragment.startswith("done="):
+                                from urllib.parse import unquote
+
+                                final_url = unquote(fragment[5:])
+                                resolved = strip_threads_url(final_url)
+                                if extract_threads_post_code(resolved):
+                                    logging.info(
+                                        "Resolved Threads share URL via real Chromium extension: "
+                                        "mode=%s %s -> %s",
+                                        mode,
+                                        url,
+                                        resolved,
+                                    )
+                                    return resolved
+                                logging.warning(
+                                    "Threads real-extension fetch kept share alias: "
+                                    "mode=%s final=%s",
+                                    mode,
+                                    final_url[:300],
+                                )
+                                break
+                            if fragment.startswith("error="):
+                                from urllib.parse import unquote
+
+                                logging.warning(
+                                    "Threads real-extension fetch failed: mode=%s error=%s",
+                                    mode,
+                                    unquote(fragment[6:])[:300],
+                                )
+                                break
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+            logging.warning(
+                "Threads real-extension resolver did not return canonical URL: "
+                "mode=%s target=%s",
+                mode,
+                last_target_url[:300] or "-",
+            )
+        except Exception as exc:
+            logging.warning(
+                "Threads real-extension resolver failed: mode=%s error=%s",
+                mode,
+                exc,
+            )
+        finally:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=2)
+                except Exception:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+            shutil.rmtree(root_dir, ignore_errors=True)
+
+    return None
+
+
 def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
     """Resolve /share/<id>/ by running fetch() inside real Chromium.
 
@@ -1658,6 +1886,13 @@ async def resolve_threads_url(
     oembed_resolved = await resolve_threads_share_via_oembed(candidate)
     if oembed_resolved:
         return oembed_resolved
+
+    real_extension_resolved = await asyncio.to_thread(
+        _resolve_threads_share_via_real_extension_page_sync,
+        candidate,
+    )
+    if real_extension_resolved:
+        return real_extension_resolved
 
     cdp_resolved = await asyncio.to_thread(
         _resolve_threads_share_via_cdp_fetch_sync,
