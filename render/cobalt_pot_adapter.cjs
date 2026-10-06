@@ -2569,12 +2569,14 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       const providers = effectiveMediaUrl !== mediaUrl
         ? [
             ["vxThreads", fetchVxThreadsMedia],
+            ["PostCopilot", fetchPostCopilotThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
             ["DLPanda", fetchDlpandaThreadsMedia],
           ]
         : shareAlias
           ? [
               ["vxThreads", fetchVxThreadsMedia],
+              ["PostCopilot", fetchPostCopilotThreadsMedia],
               ["DLPanda", fetchDlpandaThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
             ]
