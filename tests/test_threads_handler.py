@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from handlers import threads
+from handlers import music, threads
 from services.platforms.threads_media import (
     ThreadsMediaService,
     extract_threads_post_code,
@@ -273,3 +273,29 @@ async def test_threads_handler_marks_success_for_single_photo(monkeypatch):
 
     assert lease.success is True
     threads.process_threads_single_media.assert_awaited_once()
+
+
+
+@pytest.mark.asyncio
+async def test_music_threads_share_resolves_exact_video_link_before_worker(monkeypatch):
+    share_url = "https://www.threads.com/share/BAS3TS_OHB/"
+    canonical = "https://www.threads.com/@artist/post/ResolvedVideo123"
+    resolver = AsyncMock(return_value=canonical)
+    monkeypatch.setattr(music, "resolve_threads_share_fast", resolver)
+
+    resolved = await music._resolve_threads_music_source(share_url)
+
+    assert resolved == canonical
+    resolver.assert_awaited_once_with(share_url)
+
+
+@pytest.mark.asyncio
+async def test_music_threads_direct_post_skips_share_resolver(monkeypatch):
+    direct_url = "https://www.threads.com/@artist/post/AlreadyDirect123"
+    resolver = AsyncMock()
+    monkeypatch.setattr(music, "resolve_threads_share_fast", resolver)
+
+    resolved = await music._resolve_threads_music_source(direct_url)
+
+    assert resolved == direct_url
+    resolver.assert_not_awaited()
