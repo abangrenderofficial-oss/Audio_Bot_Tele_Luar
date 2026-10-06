@@ -139,26 +139,36 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
         logging.warning("Threads Chromium fallback unavailable: browser binary not found")
         return None
 
+    chrome_args = [
+        binary,
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
+        "--no-first-run",
+        "--run-all-compositor-stages-before-draw",
+        "--virtual-time-budget=6000",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "--dump-dom",
+        url,
+    ]
+    timeout_bin = shutil.which("timeout")
+    command = (
+        [timeout_bin, "--kill-after=2s", "16s", *chrome_args]
+        if timeout_bin
+        else chrome_args
+    )
+
     try:
         completed = subprocess.run(
-            [
-                binary,
-                "--headless=new",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--disable-sync",
-                "--no-first-run",
-                "--virtual-time-budget=7000",
-                "--dump-dom",
-                url,
-            ],
+            command,
             capture_output=True,
             text=True,
-            timeout=22,
+            timeout=20,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
