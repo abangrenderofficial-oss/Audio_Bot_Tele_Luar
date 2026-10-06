@@ -130,13 +130,23 @@ def _extract_threads_post_url_from_html(page: str) -> str | None:
 
 async def fetch_threads_share_page(url: str) -> tuple[str, str]:
     session = await get_http_session()
+    # Threads currently resolves /share/<token>/ server-side for crawler UAs,
+    # while ordinary browser UAs can be left on the generic JS/login shell.
     async with session.get(
         url,
-        headers=THREADS_SHARE_HEADERS,
+        headers=THREADS_PAGE_HEADERS,
         allow_redirects=True,
     ) as response:
         response.raise_for_status()
-        return str(response.url), await response.text()
+        final_url = str(response.url)
+        page = await response.text()
+        logging.info(
+            "Threads Googlebot share fetch: status=%s final=%s bytes=%s",
+            response.status,
+            final_url[:220],
+            len(page),
+        )
+        return final_url, page
 
 
 async def resolve_threads_share_via_manual_redirect(url: str) -> str | None:
