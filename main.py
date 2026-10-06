@@ -368,6 +368,7 @@ async def _run_social_music_selftest_from_env() -> None:
         return
 
     from services.media.music_download import send_social_fast_to_telegram
+    from services.platforms.threads_media import resolve_threads_share_fast
     from services.storage.music_cache import (
         get_cached_social_audio,
         store_cached_social_audio,
@@ -379,6 +380,22 @@ async def _run_social_music_selftest_from_env() -> None:
             "https://www.threads.com/share/BAV6glx_i6/",
         ),
     ]
+
+    control_share = "https://www.threads.com/share/InQUBOY9S/"
+    try:
+        control_resolved = await resolve_threads_share_fast(control_share)
+        logging.info(
+            "[THREADS-RESOLVE-CONTROL] input=%s resolved=%s changed=%s",
+            control_share,
+            control_resolved,
+            control_resolved != control_share,
+        )
+    except Exception as error:
+        logging.exception(
+            "[THREADS-RESOLVE-CONTROL] FAIL: input=%s error=%s",
+            control_share,
+            error,
+        )
 
     for source, url in cases:
         try:
