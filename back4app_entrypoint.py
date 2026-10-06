@@ -25,6 +25,16 @@ def _env_truthy(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _webhook_mode_enabled() -> bool:
+    return bool(
+        (
+            os.getenv("TELEGRAM_WEBHOOK_BASE_URL")
+            or os.getenv("RENDER_EXTERNAL_URL")
+            or ""
+        ).strip()
+    )
+
+
 def _wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -241,7 +251,11 @@ def _start_pot_provider() -> subprocess.Popen | None:
 
 
 def main() -> None:
-    health = subprocess.Popen([sys.executable, "/app/health_server.py"])
+    health = (
+        None
+        if _webhook_mode_enabled()
+        else subprocess.Popen([sys.executable, "/app/health_server.py"])
+    )
     xvfb = _start_xvfb() if _env_truthy("YOUTUBE_BROWSER_WPC_ENABLED") else None
     if xvfb is None:
         print("[WPC] browser provider disabled for low-memory runtime", flush=True)
@@ -257,7 +271,7 @@ def main() -> None:
             xvfb.terminate()
         if warp_proxy is not None and warp_proxy.poll() is None:
             warp_proxy.terminate()
-        if health.poll() is None:
+        if health is not None and health.poll() is None:
             health.terminate()
 
 
