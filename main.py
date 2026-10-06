@@ -14,6 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums.parse_mode import ParseMode
+from aiogram.types import BotCommandScopeAllGroupChats
 from aiogram_dialog import setup_dialogs
 
 from app_context import set_app_context
@@ -25,6 +26,7 @@ from config import (
     BOT_SESSION_CONNECTION_LIMIT,
     BOT_TOKEN,
     DATABASE_URL,
+    GROUP_MUSIC_COMMANDS,
     CUSTOM_API_URL,
     MEASUREMENT_ID,
     OUTPUT_DIR,
@@ -603,6 +605,10 @@ async def main():
             setup_dialogs(dp)
 
             await bot.set_my_commands(commands=BOT_COMMANDS)
+            await bot.set_my_commands(
+                commands=GROUP_MUSIC_COMMANDS,
+                scope=BotCommandScopeAllGroupChats(),
+            )
             await bot.delete_webhook(drop_pending_updates=False)
 
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
