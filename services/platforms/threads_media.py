@@ -139,6 +139,47 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return str(response.url), await response.text()
 
 
+async def resolve_threads_share_via_head(url: str) -> str | None:
+    """Probe HEAD redirects for /share/ tokens before heavier resolution paths."""
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    if not path or "/share/" not in path:
+        return None
+
+    session = await get_http_session()
+    user_agents = (
+        THREADS_SHARE_HEADERS["User-Agent"],
+        "TelegramBot (like TwitterBot)",
+        "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+        "WhatsApp/2.24.7.81 A",
+    )
+    for origin in ("https://www.threads.com", "https://www.threads.net"):
+        target = f"{origin}{path}"
+        for user_agent in user_agents:
+            try:
+                async with session.head(
+                    target,
+                    headers={"User-Agent": user_agent, "Accept": "*/*"},
+                    allow_redirects=True,
+                    timeout=8,
+                ) as response:
+                    final_url = strip_threads_url(str(response.url))
+            except Exception:
+                continue
+
+            final_path = urlparse(final_url).path
+            if extract_threads_post_code(final_url) or "/t/" in final_path:
+                logging.info(
+                    "Resolved Threads share URL via HEAD: %s -> %s",
+                    url,
+                    final_url,
+                )
+                return final_url
+    return None
+
+
 def _threads_shortcode_from_numeric_id(value: object) -> str | None:
     """Convert Threads' numeric media id back to its URL shortcode."""
     try:
@@ -568,6 +609,10 @@ async def resolve_threads_url(
 
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
+
+    head_resolved = await resolve_threads_share_via_head(candidate)
+    if head_resolved:
+        return head_resolved
 
     fetcher = fetch_share_func or fetch_threads_share_page
     try:
