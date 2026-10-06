@@ -230,28 +230,91 @@ async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
             )
             continue
 
-        try:
-            result = payload["payload"]["payloads"][path]["result"]
-            if isinstance(result, dict) and isinstance(result.get("redirect_result"), dict):
-                result = result["redirect_result"]
-            post_id = result["exports"]["rootView"]["props"]["post_id"]
-        except (KeyError, TypeError):
+        payloads = (
+            payload.get("payload", {}).get("payloads", {})
+            if isinstance(payload, dict)
+            else {}
+        )
+        route_payload = None
+        if isinstance(payloads, dict):
+            route_payload = payloads.get(path) or payloads.get(path.rstrip("/"))
+            if route_payload is None:
+                target_path = path.rstrip("/")
+                for route_key, route_value in payloads.items():
+                    if str(route_key).rstrip("/") == target_path:
+                        route_payload = route_value
+                        break
+
+        result = (
+            route_payload.get("result")
+            if isinstance(route_payload, dict)
+            else None
+        )
+
+        # The route-definition schema changes often. Recover either a canonical
+        # post URL/path or any post_id from the selected route payload instead
+        # of depending on one exact redirect_result nesting.
+        post_id = None
+        canonical_candidate = None
+
+        def _scan_route_value(value: Any, key_hint: str = "") -> None:
+            nonlocal post_id, canonical_candidate
+            if post_id is not None and canonical_candidate is not None:
+                return
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    _scan_route_value(child, str(key))
+                return
+            if isinstance(value, list):
+                for child in value:
+                    _scan_route_value(child, key_hint)
+                return
+            if isinstance(value, str):
+                normalized = unescape(value).replace("\\/", "/")
+                match = THREADS_POST_URL_SCAN_RE.search(normalized)
+                if match and canonical_candidate is None:
+                    canonical_candidate = strip_threads_url(match.group(0))
+                    return
+                path_match = re.search(
+                    r"/@([A-Za-z0-9._-]+)/post/([A-Za-z0-9_-]+)",
+                    normalized,
+                )
+                if path_match and canonical_candidate is None:
+                    canonical_candidate = (
+                        f"https://www.threads.com/@{path_match.group(1)}/post/{path_match.group(2)}"
+                    )
+                    return
+                if key_hint.lower() in {"post_id", "postid"} and value.isdigit():
+                    post_id = value
+            elif key_hint.lower() in {"post_id", "postid"} and isinstance(value, int):
+                post_id = value
+
+        _scan_route_value(result if result is not None else route_payload)
+
+        if canonical_candidate and extract_threads_post_code(canonical_candidate):
             logging.info(
-                "Threads bulk-route resolver had no post_id: origin=%s path=%s",
-                origin,
-                path,
+                "Resolved Threads share URL via bulk-route canonical: %s -> %s",
+                url,
+                canonical_candidate,
             )
-            continue
+            return canonical_candidate
 
         shortcode = _threads_shortcode_from_numeric_id(post_id)
         if shortcode:
             resolved = f"https://www.threads.com/t/{shortcode}"
             logging.info(
-                "Resolved Threads share URL via bulk route: %s -> %s",
+                "Resolved Threads share URL via bulk route post_id: %s -> %s",
                 url,
                 resolved,
             )
             return resolved
+
+        logging.info(
+            "Threads bulk-route resolver had no usable target: origin=%s path=%s payload_keys=%s",
+            origin,
+            path,
+            list(payloads.keys())[:8] if isinstance(payloads, dict) else [],
+        )
 
     return None
 
