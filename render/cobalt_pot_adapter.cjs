@@ -1333,22 +1333,21 @@ function threadsMetadataFromPayload(data, fallbackKind = "video") {
   };
 }
 
-async function downloadThreadsHybridAsset(candidate, prefix, proxyBase) {
+async function downloadThreadsHybridAsset(
+  candidate,
+  prefix,
+  proxyBase = "",
+  { referer = "https://www.threads.com/" } = {}
+) {
+  const proxyAttempt = proxyBase
+    ? {
+        name: "proxy",
+        url: `${proxyBase}?${new URLSearchParams({ url: candidate.url }).toString()}`,
+      }
+    : null;
   const attempts = candidate.kind === "video"
-    ? [
-        {
-          name: "proxy",
-          url: `${proxyBase}?${new URLSearchParams({ url: candidate.url }).toString()}`,
-        },
-        { name: "direct", url: candidate.url },
-      ]
-    : [
-        { name: "direct", url: candidate.url },
-        {
-          name: "proxy",
-          url: `${proxyBase}?${new URLSearchParams({ url: candidate.url }).toString()}`,
-        },
-      ];
+    ? [proxyAttempt, { name: "direct", url: candidate.url }].filter(Boolean)
+    : [{ name: "direct", url: candidate.url }, proxyAttempt].filter(Boolean);
 
   let lastError = "no usable asset";
   for (const attempt of attempts) {
@@ -1358,7 +1357,7 @@ async function downloadThreadsHybridAsset(candidate, prefix, proxyBase) {
         redirect: "follow",
         headers: {
           "user-agent": "Mozilla/5.0",
-          "referer": "https://www.threads.com/",
+          "referer": referer,
           "accept": "video/*,audio/*,application/octet-stream;q=0.9,*/*;q=0.1",
         },
         signal: AbortSignal.timeout(90000),
@@ -1713,6 +1712,157 @@ async function fetchPostCopilotThreadsMedia(mediaUrl, prefix) {
 }
 
 
+function decodeHtmlAttr(value) {
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&#47;/g, "/")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function extractDlpandaDownloadCandidates(html) {
+  const candidates = [];
+  const seen = new Set();
+  const attrs = ["data-download-url", "data-bridge-url", "data-worker-url"];
+
+  for (const attr of attrs) {
+    const rx = new RegExp(attr + '=["\\']([^"\\']+)["\\']', "gi");
+    for (const match of html.matchAll(rx)) {
+      const url = decodeHtmlAttr(match[1]);
+      if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+      seen.add(url);
+      const contextStart = Math.max(0, (match.index || 0) - 500);
+      const contextEnd = Math.min(html.length, (match.index || 0) + match[0].length + 500);
+      const context = html.slice(contextStart, contextEnd).toLowerCase();
+      const kind =
+        /audio|music|sound|song|track/.test(context) ||
+        /\.(?:m4a|mp3|aac|ogg|opus|wav)(?:[?#]|$)/i.test(url)
+          ? "audio"
+          : "video";
+      candidates.push({
+        url,
+        kind,
+        score: attr === "data-download-url" ? 1800 : attr === "data-bridge-url" ? 1700 : 1600,
+        pathHint: "dlpanda." + attr,
+      });
+    }
+  }
+
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+async function fetchDlpandaThreadsMedia(mediaUrl, prefix) {
+  const pageUrl = "https://dlpanda.com/threads";
+  const started = Date.now();
+  const browserHeaders = {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+  };
+
+  const pageResponse = await fetch(pageUrl, {
+    redirect: "follow",
+    headers: browserHeaders,
+    signal: AbortSignal.timeout(15000),
+  });
+  const pageHtml = await pageResponse.text();
+  if (!pageResponse.ok) {
+    throw new Error(`DLPanda page HTTP ${pageResponse.status}`);
+  }
+
+  const marker = pageHtml.indexOf("data-download-form");
+  const formStart = marker >= 0 ? pageHtml.lastIndexOf("<form", marker) : -1;
+  const formEnd = formStart >= 0 ? pageHtml.indexOf("</form>", formStart) : -1;
+  if (formStart < 0 || formEnd < 0) {
+    throw new Error("DLPanda Threads form not found");
+  }
+  const formHtml = pageHtml.slice(formStart, formEnd + 7);
+  const tokenMatch =
+    formHtml.match(/<input[^>]*name=["']_token["'][^>]*value=["']([^"']+)["']/i) ||
+    formHtml.match(/<input[^>]*value=["']([^"']+)["'][^>]*name=["']_token["']/i);
+  const csrfToken = String(tokenMatch?.[1] || "").trim();
+  if (!csrfToken) {
+    throw new Error("DLPanda CSRF token missing");
+  }
+
+  let cookieHeader = "";
+  try {
+    const values = typeof pageResponse.headers.getSetCookie === "function"
+      ? pageResponse.headers.getSetCookie()
+      : [pageResponse.headers.get("set-cookie")].filter(Boolean);
+    cookieHeader = values
+      .map((value) => String(value).split(";")[0])
+      .filter(Boolean)
+      .join("; ");
+  } catch {}
+
+  const body = new FormData();
+  body.set("_token", csrfToken);
+  body.set("url", mediaUrl);
+
+  const postHeaders = {
+    ...browserHeaders,
+    "accept": "text/html",
+    "x-requested-with": "XMLHttpRequest",
+    "referer": pageUrl,
+  };
+  if (cookieHeader) postHeaders.cookie = cookieHeader;
+
+  const parseResponse = await fetch(pageUrl, {
+    method: "POST",
+    redirect: "follow",
+    headers: postHeaders,
+    body,
+    signal: AbortSignal.timeout(25000),
+  });
+  const resultHtml = await parseResponse.text();
+  if (!parseResponse.ok) {
+    throw new Error(
+      `DLPanda parse HTTP ${parseResponse.status}: ${resultHtml.replace(/\\s+/g, " ").slice(0, 400)}`
+    );
+  }
+
+  const candidates = extractDlpandaDownloadCandidates(resultHtml);
+  if (!candidates.length) {
+    const state =
+      (resultHtml.match(/data-download-state=["']([^"']+)["']/i) || [,""])[1];
+    throw new Error(`DLPanda returned no downloadable media state=${state || "unknown"}`);
+  }
+
+  let lastError = "no DLPanda candidate had audio";
+  for (const candidate of candidates.slice(0, 12)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate,
+        prefix,
+        "",
+        { referer: pageUrl }
+      );
+      console.log(
+        `[SOCIAL-WORKER] threads DLPanda ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title: candidate.kind === "audio" ? "Threads music" : "Threads audio",
+          performer: "Threads",
+          duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  throw new Error(`DLPanda media extraction failed: ${lastError}`);
+}
+
 async function probeDlpandaThreadsAssets(mediaUrl) {
   try {
     const pageUrl = "https://dlpanda.com/threads";
@@ -1996,32 +2146,38 @@ async function runSocialWorkerAudio(mediaUrl, source) {
 
     let effectiveMediaUrl = mediaUrl;
     if (source === "threads") {
-      try {
+      const shareAlias = isThreadsShareAlias(mediaUrl);
+      const providers = shareAlias
+        ? [
+            ["DLPanda", fetchDlpandaThreadsMedia],
+            ["ThreadsDL", fetchThreadsDlMedia],
+          ]
+        : [
+            ["ThreadsDL", fetchThreadsDlMedia],
+            ["DLPanda", fetchDlpandaThreadsMedia],
+          ];
+
+      for (const [providerName, provider] of providers) {
+        try {
+          console.log(`[SOCIAL-WORKER] threads ${providerName} hybrid start`);
+          threadsProvider = await provider(mediaUrl, prefix);
+          providerRawPath = threadsProvider.filePath;
+          break;
+        } catch (error) {
+          console.warn(
+            `[SOCIAL-WORKER] threads ${providerName} hybrid failed:`,
+            String(error?.message || error).slice(0, 1200)
+          );
+          clearOutputs();
+        }
+      }
+
+      // Only canonicalize if both direct media providers failed. This keeps
+      // normal Threads requests fast while retaining yt-dlp as a final fallback.
+      if (!providerRawPath) {
         effectiveMediaUrl = await resolveThreadsShareViaRedirectChecker(mediaUrl);
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
-        }
-        console.log("[SOCIAL-WORKER] threads ThreadsDL fallback start");
-        threadsProvider = await fetchThreadsDlMedia(effectiveMediaUrl, prefix);
-        providerRawPath = threadsProvider.filePath;
-      } catch (error) {
-        console.warn(
-          "[SOCIAL-WORKER] threads ThreadsDL fallback failed:",
-          String(error?.message || error).slice(0, 1200)
-        );
-        clearOutputs();
-
-        try {
-          console.log("[SOCIAL-WORKER] threads PostCopilot fallback start");
-          threadsProvider = await fetchPostCopilotThreadsMedia(effectiveMediaUrl, prefix);
-          providerRawPath = threadsProvider.filePath;
-        } catch (postCopilotError) {
-          console.warn(
-            "[SOCIAL-WORKER] threads PostCopilot fallback failed:",
-            String(postCopilotError?.message || postCopilotError).slice(0, 1200)
-          );
-          clearOutputs();
-          await probeDlpandaThreadsAssets(effectiveMediaUrl);
         }
       }
     }
