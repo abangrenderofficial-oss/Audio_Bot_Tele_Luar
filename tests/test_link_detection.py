@@ -75,3 +75,13 @@ def test_extract_x_video_link_canonicalizes_to_tweet_url():
         "twitter",
         "https://x.com/munimunisalt/status/1983827496899637543",
     )
+
+
+
+def test_extract_tiktok_short_link_for_music():
+    assert extract_supported_link(
+        "https://vt.tiktok.com/ZSbXVXSTa/"
+    ) == (
+        "tiktok",
+        "https://vt.tiktok.com/ZSbXVXSTa/",
+    )

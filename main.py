@@ -383,6 +383,10 @@ async def _run_social_music_selftest_from_env() -> None:
 
     cases = [
         (
+            "tiktok",
+            "https://vt.tiktok.com/ZSbXVXSTa/",
+        ),
+        (
             "threads",
             "https://www.threads.com/share/_6cMYsy0h/",
         ),
