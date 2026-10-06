@@ -56,7 +56,7 @@ async def test_process_spotify_downloads_matching_track_with_metadata(monkeypatc
         AsyncMock(side_effect=RuntimeError("fast worker unavailable")),
     )
     monkeypatch.setattr(spotify, "get_spotify_track", AsyncMock(return_value=track))
-    monkeypatch.setattr(spotify, "search_youtube_track", lambda _query: {"webpage_url": metrics.url})
+    monkeypatch.setattr(spotify, "search_youtube_track_fast", lambda _query: {"webpage_url": metrics.url})
     monkeypatch.setattr(spotify, "download_mp3_with_ytdlp_metrics", AsyncMock(return_value=metrics))
     prepared_metadata = SimpleNamespace(thumbnail_path=None, cleanup=Mock())
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ async def test_process_spotify_fast_worker_adds_group_playlist(monkeypatch):
     )
     monkeypatch.setattr(
         spotify,
-        "search_youtube_track",
+        "search_youtube_track_fast",
         lambda _query: {"webpage_url": youtube_url},
     )
     monkeypatch.setattr(
