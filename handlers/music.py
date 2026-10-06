@@ -161,6 +161,17 @@ async def _resolve_threads_music_source(source_url: str) -> str:
     return source_url
 
 
+def _social_audio_caption(
+    service_name: str,
+    title: str,
+    quality_label: str,
+) -> str:
+    escaped_title = html.escape(title)
+    if service_name in {"threads", "twitter"}:
+        return f"🎵 {escaped_title}"
+    return f"🎵 {escaped_title}\n{html.escape(quality_label)}"
+
+
 MUSIC_LINK_SERVICES = frozenset(
     {
         "youtube",
@@ -560,8 +571,10 @@ async def process_music_link(
                         audio=str(social_cached["telegram_file_id"]),
                         title=cached_title,
                         performer=cached_performer,
-                        caption=(
-                            f"🎵 {html.escape(cached_title)}\nFast Audio"
+                        caption=_social_audio_caption(
+                            service_name,
+                            cached_title,
+                            "Fast Audio",
                         ),
                         bot_url=bot_url,
                         duration=cached_duration,
@@ -811,9 +824,10 @@ async def process_music_link(
                         audio=str(shared_result["file_id"]),
                         title=shared_title,
                         performer=shared_performer,
-                        caption=(
-                            f"🎵 {html.escape(shared_title)}\n"
-                            f"{html.escape(shared_quality)}"
+                        caption=_social_audio_caption(
+                            service_name,
+                            shared_title,
+                            shared_quality,
                         ),
                         bot_url=bot_url,
                         duration=shared_duration,
@@ -847,7 +861,7 @@ async def process_music_link(
                         await safe_edit_text(
                             status_message,
                             (
-                                "🎬 Threads • ambil video & convert ke audio..."
+                                "🎧 Threads • sedang ambil audio dari post..."
                                 if service_name == "threads"
                                 else (
                                     f"🎧 {service_name.title()} Fast Audio • "
