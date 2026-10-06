@@ -164,7 +164,21 @@ class MemoryDataBase:
         return [g for g in self._groups.values() if getattr(g, "status", "active") == "active"]
 
     async def is_music_group_connected(self, group_id: int) -> bool:
-        state = self._music_groups.get(int(group_id))
+        gid = int(group_id)
+        try:
+            from services.storage.music_cache import (
+                get_remote_music_group_connected,
+            )
+
+            remote = await get_remote_music_group_connected(gid)
+            if remote is not None:
+                state = self._music_groups.setdefault(gid, {})
+                state["connected"] = bool(remote)
+                return bool(remote)
+        except Exception:
+            pass
+
+        state = self._music_groups.get(gid)
         return bool(state and state.get("connected"))
 
     async def set_music_group_connected(
@@ -179,6 +193,19 @@ class MemoryDataBase:
         state["connected"] = bool(connected)
         if connected_by_user_id is not None:
             state["connected_by_user_id"] = int(connected_by_user_id)
+
+        try:
+            from services.storage.music_cache import (
+                set_remote_music_group_connected,
+            )
+
+            await set_remote_music_group_connected(
+                gid,
+                connected=bool(connected),
+                connected_by_user_id=connected_by_user_id,
+            )
+        except Exception:
+            pass
 
     async def add_music_group_track(
         self,
@@ -195,8 +222,36 @@ class MemoryDataBase:
         audio_message_id: int,
     ) -> Any:
         gid = int(group_id)
-        tracks = self._music_tracks.setdefault(gid, [])
         audio_message_id = int(audio_message_id)
+        tracks = self._music_tracks.setdefault(gid, [])
+
+        try:
+            from services.storage.music_cache import add_remote_music_group_track
+
+            remote = await add_remote_music_group_track(
+                group_id=gid,
+                added_by_user_id=added_by_user_id,
+                service=service,
+                source_url=source_url,
+                title=title,
+                performer=performer,
+                telegram_file_id=telegram_file_id,
+                duration_seconds=duration_seconds,
+                source_message_id=source_message_id,
+                audio_message_id=audio_message_id,
+            )
+            if remote is not None:
+                row = SimpleNamespace(**remote)
+                for index, existing in enumerate(tracks):
+                    if int(existing.audio_message_id) == audio_message_id:
+                        tracks[index] = row
+                        break
+                else:
+                    tracks.append(row)
+                return row
+        except Exception:
+            pass
+
         for track in tracks:
             if int(track.audio_message_id) == audio_message_id:
                 return track
@@ -231,7 +286,22 @@ class MemoryDataBase:
         *,
         limit: int | None = None,
     ) -> list[Any]:
-        rows = list(self._music_tracks.get(int(group_id), []))
+        gid = int(group_id)
+        try:
+            from services.storage.music_cache import (
+                list_remote_music_group_tracks,
+            )
+
+            remote = await list_remote_music_group_tracks(gid, limit=limit)
+            if remote is not None:
+                rows = [SimpleNamespace(**item) for item in remote]
+                if limit is None:
+                    self._music_tracks[gid] = list(rows)
+                return rows
+        except Exception:
+            pass
+
+        rows = list(self._music_tracks.get(gid, []))
         if limit is not None:
             rows = rows[: max(1, int(limit))]
         return rows
@@ -243,12 +313,28 @@ class MemoryDataBase:
         *,
         limit: int = 10,
     ) -> list[Any]:
+        gid = int(group_id)
+        try:
+            from services.storage.music_cache import (
+                search_remote_music_group_tracks,
+            )
+
+            remote = await search_remote_music_group_tracks(
+                gid,
+                query,
+                limit=limit,
+            )
+            if remote is not None:
+                return [SimpleNamespace(**item) for item in remote]
+        except Exception:
+            pass
+
         needle = str(query or "").strip().casefold()
         if not needle:
             return []
         rows = [
             row
-            for row in self._music_tracks.get(int(group_id), [])
+            for row in self._music_tracks.get(gid, [])
             if needle in str(getattr(row, "title", "") or "").casefold()
             or needle in str(getattr(row, "performer", "") or "").casefold()
         ]
@@ -258,9 +344,21 @@ class MemoryDataBase:
         self,
         group_id: int,
     ) -> list[int]:
+        gid = int(group_id)
+        try:
+            from services.storage.music_cache import (
+                get_remote_music_group_source_message_ids,
+            )
+
+            remote = await get_remote_music_group_source_message_ids(gid)
+            if remote is not None:
+                return remote
+        except Exception:
+            pass
+
         values = {
             int(row.source_message_id)
-            for row in self._music_tracks.get(int(group_id), [])
+            for row in self._music_tracks.get(gid, [])
             if getattr(row, "source_message_id", None) is not None
         }
         return sorted(values)
@@ -270,13 +368,33 @@ class MemoryDataBase:
         group_id: int,
         message_ids,
     ) -> None:
+        gid = int(group_id)
         ids = {int(value) for value in message_ids}
-        for row in self._music_tracks.get(int(group_id), []):
+        for row in self._music_tracks.get(gid, []):
             if getattr(row, "source_message_id", None) in ids:
                 row.source_message_id = None
 
+        try:
+            from services.storage.music_cache import clear_remote_music_group_links
+
+            await clear_remote_music_group_links(gid, sorted(ids))
+        except Exception:
+            pass
+
     async def get_music_group_track_count(self, group_id: int) -> int:
-        return len(self._music_tracks.get(int(group_id), []))
+        gid = int(group_id)
+        try:
+            from services.storage.music_cache import (
+                get_remote_music_group_track_count,
+            )
+
+            remote = await get_remote_music_group_track_count(gid)
+            if remote is not None:
+                return remote
+        except Exception:
+            pass
+
+        return len(self._music_tracks.get(gid, []))
 
     async def record_download(
         self,
