@@ -299,3 +299,33 @@ async def test_music_threads_direct_post_skips_share_resolver(monkeypatch):
 
     assert resolved == direct_url
     resolver.assert_not_awaited()
+
+
+
+def test_threads_audio_caption_is_title_only():
+    assert music._social_audio_caption(
+        "threads",
+        "My Threads Song",
+        "Original Quality",
+    ) == "🎵 My Threads Song"
+
+
+def test_x_audio_caption_stays_title_only_on_cache_replay():
+    assert music._social_audio_caption(
+        "twitter",
+        "Original audio — @artist",
+        "Fast Audio",
+    ) == "🎵 Original audio — @artist"
+
+
+@pytest.mark.asyncio
+async def test_music_threads_share_resolves_exact_image_music_link(monkeypatch):
+    share_url = "https://www.threads.com/share/_6cMYsy0h/"
+    canonical = "https://www.threads.com/@artist/post/ImageMusic123"
+    resolver = AsyncMock(return_value=canonical)
+    monkeypatch.setattr(music, "resolve_threads_share_fast", resolver)
+
+    resolved = await music._resolve_threads_music_source(share_url)
+
+    assert resolved == canonical
+    resolver.assert_awaited_once_with(share_url)
