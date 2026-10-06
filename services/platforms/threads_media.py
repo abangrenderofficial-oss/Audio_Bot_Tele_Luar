@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+
+import aiohttp
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -147,6 +149,52 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
             len(page),
         )
         return final_url, page
+
+
+async def resolve_threads_share_via_headerless_fetch(url: str) -> str | None:
+    """Mirror browser extension fetch: no explicit/automatic User-Agent header."""
+    timeout = aiohttp.ClientTimeout(total=12)
+    try:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            skip_auto_headers={"User-Agent"},
+        ) as session:
+            async with session.get(
+                url,
+                headers={"Accept-Language": "en"},
+                allow_redirects=True,
+            ) as response:
+                final_url = str(response.url)
+                page = await response.text(errors="replace")
+    except Exception as exc:
+        logging.info("Threads headerless resolver request failed: error=%s", exc)
+        return None
+
+    resolved = strip_threads_url(final_url)
+    if extract_threads_post_code(resolved):
+        logging.info(
+            "Resolved Threads share URL via headerless browser-style fetch: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    resolved = _extract_threads_post_url_from_html(page)
+    if resolved:
+        logging.info(
+            "Resolved Threads share URL via headerless page metadata: %s -> %s",
+            url,
+            resolved,
+        )
+        return resolved
+
+    logging.info(
+        "Threads headerless resolver miss: status=%s final=%s bytes=%s",
+        response.status,
+        final_url[:220],
+        len(page),
+    )
+    return None
 
 
 async def resolve_threads_share_via_manual_redirect(url: str) -> str | None:
@@ -841,6 +889,10 @@ async def resolve_threads_url(
 
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
+
+    headerless_resolved = await resolve_threads_share_via_headerless_fetch(candidate)
+    if headerless_resolved:
+        return headerless_resolved
 
     manual_resolved = await resolve_threads_share_via_manual_redirect(candidate)
     if manual_resolved:
