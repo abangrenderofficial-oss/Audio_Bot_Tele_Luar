@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.server
 import json
 import os
 import re
@@ -805,6 +806,168 @@ async def resolve_threads_share_via_crawlers(url: str) -> str | None:
     return None
 
 
+def _resolve_threads_share_with_extension_fetch_sync(url: str) -> str | None:
+    """Resolve a Threads /share/ URL using Chromium's extension fetch path.
+
+    Threads currently treats a browser-extension fetch differently from a
+    server-side HTTP client or normal document navigation. Reproduce the same
+    anonymous fetch shape used by Threads Clean Link: credentials omitted,
+    redirects followed, and only Accept-Language set explicitly. The temporary
+    extension calls back to a loopback-only HTTP server with response.url.
+    """
+    binary = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    if not binary:
+        return None
+
+    root_dir = tempfile.mkdtemp(prefix="threads-ext-resolver-")
+    extension_dir = os.path.join(root_dir, "extension")
+    profile_dir = os.path.join(root_dir, "profile")
+    os.makedirs(extension_dir, exist_ok=True)
+    os.makedirs(profile_dir, exist_ok=True)
+
+    result: dict[str, str] = {"url": "", "error": ""}
+
+    class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != "/done":
+                self.send_response(404)
+                self.end_headers()
+                return
+            from urllib.parse import parse_qs
+
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            result["url"] = str((query.get("url") or [""])[0]).strip()
+            result["error"] = str((query.get("error") or [""])[0]).strip()
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _CallbackHandler)
+    server.timeout = 0.35
+    callback_port = int(server.server_address[1])
+
+    manifest = {
+        "manifest_version": 3,
+        "name": "Threads Share Resolver",
+        "version": "1.0",
+        "background": {"service_worker": "background.js"},
+        "host_permissions": [
+            "https://*.threads.com/*",
+            "https://*.threads.net/*",
+            "http://127.0.0.1/*",
+        ],
+    }
+    with open(
+        os.path.join(extension_dir, "manifest.json"),
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(manifest, handle)
+
+    callback_base = f"http://127.0.0.1:{callback_port}/done"
+    background = f"""
+(async () => {{
+  const source = {json.dumps(url)};
+  const callback = {json.dumps(callback_base)};
+  try {{
+    const response = await fetch(source, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
+    }});
+    await fetch(callback + "?url=" + encodeURIComponent(response.url));
+  }} catch (error) {{
+    await fetch(
+      callback + "?error=" +
+      encodeURIComponent(String(error && error.message || error || "fetch_failed"))
+    );
+  }}
+}})();
+"""
+    with open(
+        os.path.join(extension_dir, "background.js"),
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(background)
+
+    process: subprocess.Popen | None = None
+    try:
+        process = subprocess.Popen(
+            [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                f"--user-data-dir={profile_dir}",
+                f"--disable-extensions-except={extension_dir}",
+                f"--load-extension={extension_dir}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline and not result["url"] and not result["error"]:
+            if process.poll() is not None:
+                break
+            server.handle_request()
+
+        final_url = result["url"]
+        if final_url:
+            resolved = strip_threads_url(final_url)
+            if extract_threads_post_code(resolved):
+                logging.info(
+                    "Resolved Threads share URL via Chromium extension fetch: %s -> %s",
+                    url,
+                    resolved,
+                )
+                return resolved
+            logging.warning(
+                "Threads extension fetch did not resolve canonical post: final=%s",
+                final_url[:300],
+            )
+        elif result["error"]:
+            logging.warning(
+                "Threads extension fetch failed: error=%s",
+                result["error"][:300],
+            )
+        else:
+            logging.warning("Threads extension fetch timed out without callback")
+        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.warning("Threads extension resolver failed to run: error=%s", exc)
+        return None
+    finally:
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=2)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        shutil.rmtree(root_dir, ignore_errors=True)
+
+
 def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
     """Resolve /share/<id>/ with a real Chromium navigation.
 
@@ -1091,6 +1254,13 @@ async def resolve_threads_url(
                 resolved_proxy,
             )
             return resolved_proxy
+
+    extension_resolved = await asyncio.to_thread(
+        _resolve_threads_share_with_extension_fetch_sync,
+        candidate,
+    )
+    if extension_resolved:
+        return extension_resolved
 
     chromium_resolved = await asyncio.to_thread(
         _resolve_threads_share_with_chromium_sync,
