@@ -40,6 +40,7 @@ from services.download.queue import (
 from services.inline.album_links import create_inline_album_request
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
+from services.admin_music_monitor import mirror_private_audio_to_admin_group
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
 from services.music_group_dedupe import duplicate_keeper_message_id
 from services.media.delivery import send_audio_with_thumbnail
@@ -583,6 +584,14 @@ async def process_music_link(
                 exc,
             )
 
+    monitor_platform = {
+        "youtube": "YouTube",
+        "tiktok": "TikTok",
+        "instagram": "Instagram",
+        "threads": "Threads",
+        "twitter": "X",
+    }.get(service_name, service_name.title())
+
     async def _reply_audio_with_group_playlist(**kwargs):
         sent = await message.reply_audio(**kwargs)
         audio = getattr(sent, "audio", None)
@@ -602,10 +611,30 @@ async def process_music_link(
         )
         return sent
 
+    async def _reply_audio_with_admin_monitor(**kwargs):
+        sent = await message.reply_audio(**kwargs)
+        audio = getattr(sent, "audio", None)
+        await mirror_private_audio_to_admin_group(
+            message,
+            file_id=getattr(audio, "file_id", None),
+            title=(
+                kwargs.get("title")
+                or getattr(audio, "title", None)
+                or getattr(audio, "file_name", None)
+            ),
+            performer=(
+                kwargs.get("performer")
+                or getattr(audio, "performer", None)
+            ),
+            duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+            platform=monitor_platform,
+        )
+        return sent
+
     audio_sender = (
         _reply_audio_with_group_playlist
         if group_music_connected
-        else message.reply_audio
+        else _reply_audio_with_admin_monitor
     )
 
     if service_name in MUSIC_BLOCKED_SERVICES:
@@ -928,6 +957,15 @@ async def process_music_link(
                         duration=fast_duration,
                         business_connection_id=business_id,
                     )
+                    if not group_music_connected:
+                        await mirror_private_audio_to_admin_group(
+                            message,
+                            file_id=fast_result.get("file_id"),
+                            title=fast_title,
+                            performer=fast_performer,
+                            duration=fast_duration,
+                            platform="YouTube",
+                        )
 
                     if (
                         shared_fast_future is not None
@@ -1147,6 +1185,15 @@ async def process_music_link(
                         title=social_title,
                         business_connection_id=business_id,
                     )
+                    if not group_music_connected:
+                        await mirror_private_audio_to_admin_group(
+                            message,
+                            file_id=social_result.get("file_id"),
+                            title=social_title,
+                            performer=social_performer,
+                            duration=social_duration,
+                            platform=monitor_platform,
+                        )
 
                     if (
                         shared_social_future is not None

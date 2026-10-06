@@ -34,6 +34,7 @@ from handlers.youtube import (
     search_youtube_track_fast,
 )
 from services.logger import logger as logging, summarize_url_for_log
+from services.admin_music_monitor import mirror_private_audio_to_admin_group
 from services.media.audio_flow import run_audio_flow
 from services.media.audio_metadata import (
     build_audio_filename,
@@ -221,10 +222,30 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
         )
         return sent
 
+    async def _reply_audio_with_admin_monitor(**kwargs):
+        sent = await message.reply_audio(**kwargs)
+        audio = getattr(sent, "audio", None)
+        await mirror_private_audio_to_admin_group(
+            message,
+            file_id=getattr(audio, "file_id", None),
+            title=(
+                kwargs.get("title")
+                or getattr(audio, "title", None)
+                or getattr(audio, "file_name", None)
+            ),
+            performer=(
+                kwargs.get("performer")
+                or getattr(audio, "performer", None)
+            ),
+            duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+            platform="Spotify",
+        )
+        return sent
+
     audio_sender = (
         _reply_audio_with_group_playlist
         if group_music_connected
-        else message.reply_audio
+        else _reply_audio_with_admin_monitor
     )
 
     try:
@@ -489,6 +510,15 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     performer=performer,
                     duration=result_duration,
                 )
+                if not group_music_connected:
+                    await mirror_private_audio_to_admin_group(
+                        message,
+                        file_id=file_id,
+                        title=title,
+                        performer=performer,
+                        duration=result_duration,
+                        platform="Spotify",
+                    )
                 request_lease.mark_success()
                 await maybe_delete_user_message(
                     message,
