@@ -1558,7 +1558,7 @@ async function downloadThreadsHybridAsset(
   candidate,
   prefix,
   proxyBase = "",
-  { referer = "https://www.threads.com/" } = {}
+  { referer = "https://www.threads.com/", extraHeaders = {} } = {}
 ) {
   const proxyAttempt = proxyBase
     ? {
@@ -1580,6 +1580,14 @@ async function downloadThreadsHybridAsset(
           "user-agent": "Mozilla/5.0",
           "referer": referer,
           "accept": "video/*,audio/*,application/octet-stream;q=0.9,*/*;q=0.1",
+          ...Object.fromEntries(
+            Object.entries(extraHeaders || {}).filter(
+              ([key, value]) =>
+                typeof key === "string" &&
+                typeof value === "string" &&
+                !["host", "content-length", "connection"].includes(key.toLowerCase())
+            )
+          ),
         },
         signal: AbortSignal.timeout(90000),
       });
@@ -1788,6 +1796,141 @@ async function fetchFxThreadsMedia(mediaUrl, prefix) {
             (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
           performer: "Threads",
           duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
+async function fetchEasyDownThreadsMedia(mediaUrl, prefix) {
+  const token = String(process.env.EASYDOWN_API_KEY || "").trim();
+  if (!token) throw new Error("EASYDOWN_API_KEY not configured");
+
+  const started = Date.now();
+  const response = await fetch(
+    "https://api.easydown.org/api/v1/platforms/threads/parse",
+    {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${token}`,
+        "content-type": "application/json",
+        "accept": "application/json",
+        "user-agent": "AbangRender-MusicBot/1.0",
+      },
+      body: JSON.stringify({ url: mediaUrl }),
+      signal: AbortSignal.timeout(45000),
+    }
+  );
+
+  const raw = await response.text();
+  let payload = null;
+  try { payload = JSON.parse(raw); } catch {}
+
+  if (!response.ok || !payload || Number(payload?.status || response.status) >= 400) {
+    throw new Error(
+      `EasyDown failed status=${response.status}: ${String(
+        payload?.msg || payload?.message || raw || "invalid response"
+      ).slice(0, 700)}`
+    );
+  }
+
+  const media = payload?.data?.media || payload?.data || {};
+  const candidates = [];
+  const seen = new Set();
+
+  const add = (item, kind, score) => {
+    const url = String(item?.url || item?.src || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({
+      url,
+      kind,
+      score,
+      headers:
+        item?.headers && typeof item.headers === "object"
+          ? item.headers
+          : {},
+    });
+  };
+
+  for (const item of Array.isArray(media?.videos) ? media.videos : []) {
+    const hasAudio = item?.hasAudio !== false;
+    add(item, "video", hasAudio ? 3000 : 1800);
+  }
+  for (const item of Array.isArray(media?.audios) ? media.audios : []) {
+    add(item, "audio", 2600);
+  }
+
+  // Threads can expose music/linked media in platformData rather than in
+  // the normalized arrays. Scan only media-looking URL fields as a fallback.
+  const scan = (value, path = "") => {
+    if (typeof value === "string") {
+      if (!/^https?:\/\//i.test(value)) return;
+      const hint = path.toLowerCase();
+      if (/audio|music|sound|track/.test(hint)) {
+        add({ url: value }, "audio", 2200);
+      } else if (/video|playback|video_versions|linked_inline_media/.test(hint)) {
+        add({ url: value }, "video", 2100);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => scan(item, path + "." + index));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        scan(item, path ? path + "." + key : key);
+      }
+    }
+  };
+  scan(payload?.data?.platformData || {});
+
+  // Hybrid priority:
+  // video with embedded audio first; standalone Threads music/audio next.
+  candidates.sort((a, b) => b.score - a.score);
+  if (!candidates.length) {
+    throw new Error("EasyDown returned no video/audio candidates");
+  }
+
+  let lastError = "EasyDown returned no usable audio";
+  for (const candidate of candidates.slice(0, 20)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate,
+        prefix,
+        "",
+        {
+          referer: "https://www.threads.com/",
+          extraHeaders: candidate.headers,
+        }
+      );
+      console.log(
+        `[SOCIAL-WORKER] threads EasyDown ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title: String(media?.title || payload?.data?.platformData?.text || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 180) ||
+            (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+          performer:
+            String(
+              payload?.data?.platformData?.user?.username ||
+              payload?.data?.platformData?.user?.full_name ||
+              ""
+            ).trim() || "Threads",
+          duration:
+            Number.isFinite(Number(media?.duration))
+              ? Number(media.duration)
+              : null,
         },
         mediaKind: candidate.kind,
       };
@@ -2950,6 +3093,9 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : shareAlias
           ? [
+              ...(String(process.env.EASYDOWN_API_KEY || "").trim()
+                ? [["EasyDown", fetchEasyDownThreadsMedia]]
+                : []),
               ["curl-x", fetchCurlXThreadsMedia],
               ["Microlink", fetchMicrolinkThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
