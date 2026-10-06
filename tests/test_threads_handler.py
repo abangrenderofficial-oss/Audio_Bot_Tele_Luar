@@ -329,3 +329,26 @@ async def test_music_threads_share_resolves_exact_image_music_link(monkeypatch):
 
     assert resolved == canonical
     resolver.assert_awaited_once_with(share_url)
+
+
+
+@pytest.mark.asyncio
+async def test_threads_worker_caption_is_enforced_title_only(monkeypatch):
+    fake_bot = type("Bot", (), {})()
+    fake_bot.edit_message_caption = AsyncMock()
+    monkeypatch.setattr(music, "bot", fake_bot)
+
+    await music._enforce_worker_title_only_caption(
+        service_name="threads",
+        chat_id=123,
+        message_id=456,
+        title="Image Music",
+        business_connection_id=None,
+    )
+
+    fake_bot.edit_message_caption.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        caption="🎵 Image Music",
+        parse_mode="HTML",
+    )

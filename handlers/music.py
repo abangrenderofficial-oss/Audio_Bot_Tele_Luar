@@ -172,6 +172,37 @@ def _social_audio_caption(
     return f"🎵 {escaped_title}\n{html.escape(quality_label)}"
 
 
+async def _enforce_worker_title_only_caption(
+    *,
+    service_name: str,
+    chat_id: int,
+    message_id: object,
+    title: str,
+    business_connection_id: str | None,
+) -> None:
+    if service_name not in {"threads", "twitter"} or message_id is None:
+        return
+
+    kwargs = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "caption": _social_audio_caption(service_name, title, ""),
+        "parse_mode": "HTML",
+    }
+    if business_connection_id:
+        kwargs["business_connection_id"] = business_connection_id
+
+    try:
+        await bot.edit_message_caption(**kwargs)
+    except Exception as exc:
+        logging.warning(
+            "Title-only caption enforcement failed: source=%s message_id=%s error=%s",
+            service_name,
+            message_id,
+            exc,
+        )
+
+
 MUSIC_LINK_SERVICES = frozenset(
     {
         "youtube",
@@ -921,6 +952,14 @@ async def process_music_link(
                     social_duration = social_result.get("duration")
                     social_quality = str(
                         social_result.get("quality_label") or "Fast Audio"
+                    )
+
+                    await _enforce_worker_title_only_caption(
+                        service_name=service_name,
+                        chat_id=message.chat.id,
+                        message_id=social_result.get("message_id"),
+                        title=social_title,
+                        business_connection_id=business_id,
                     )
 
                     if (
