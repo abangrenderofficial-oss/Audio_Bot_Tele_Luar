@@ -622,3 +622,70 @@ async def test_cancel_action_returns_to_history_for_chat_id_message(monkeypatch)
         reply_markup=history_kb,
     )
 
+
+
+@pytest.mark.asyncio
+async def test_menuadmin_owner_private_shows_all_current_commands(monkeypatch):
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=6749355196),
+        chat=SimpleNamespace(id=6749355196, type="private"),
+        answer=AsyncMock(),
+    )
+
+    monkeypatch.setattr(admin, "is_admin_music_owner", lambda user_id: int(user_id) == 6749355196)
+
+    await admin.admin_command_menu(message)
+
+    message.answer.assert_awaited_once()
+    text = message.answer.await_args.args[0]
+    for command in (
+        "/start",
+        "/help",
+        "/stats",
+        "/settings",
+        "/remove_keyboard",
+        "/connectmusic",
+        "/playlist",
+        "/playall",
+        "/search",
+        "/clearlink",
+        "/clearall",
+        "/playsync",
+        "/stopsync",
+        "/admin",
+        "/perf",
+        "/session",
+        "/connectadminmusic",
+        "/menuadmin",
+    ):
+        assert command in text
+
+
+@pytest.mark.asyncio
+async def test_menuadmin_is_silent_for_non_owner(monkeypatch):
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=123456),
+        chat=SimpleNamespace(id=123456, type="private"),
+        answer=AsyncMock(),
+    )
+
+    monkeypatch.setattr(admin, "is_admin_music_owner", lambda _user_id: False)
+
+    await admin.admin_command_menu(message)
+
+    message.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_menuadmin_owner_in_group_is_silent(monkeypatch):
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=6749355196),
+        chat=SimpleNamespace(id=-100123, type="supergroup"),
+        answer=AsyncMock(),
+    )
+
+    monkeypatch.setattr(admin, "is_admin_music_owner", lambda _user_id: True)
+
+    await admin.admin_command_menu(message)
+
+    message.answer.assert_not_awaited()
