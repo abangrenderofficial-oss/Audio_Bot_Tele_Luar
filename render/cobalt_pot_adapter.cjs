@@ -2304,6 +2304,193 @@ async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
   throw new Error(lastError);
 }
 
+
+function decodeThreadsSsrJson(raw) {
+  return String(raw || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function threadsCanonicalCodeFromHtml(html) {
+  const patterns = [
+    /<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:url["']/i,
+  ];
+  for (const rx of patterns) {
+    const value = String(html || "").match(rx)?.[1] || "";
+    const clean = value
+      .replace(/&#0?64;/gi, "@")
+      .replace(/&amp;/gi, "&");
+    const match = clean.match(
+      /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/([A-Za-z0-9_-]+)/i
+    );
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function threadsPostCodeFromUrl(mediaUrl) {
+  try {
+    return (
+      new URL(mediaUrl).pathname.match(
+        /^\/@[^/]+\/post\/([A-Za-z0-9_-]+)\/?$/i
+      )?.[1] || ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+function threadsNodeRichness(node) {
+  if (!node || typeof node !== "object") return 0;
+  let score = 0;
+  if (Array.isArray(node.carousel_media) && node.carousel_media.length) score += 50;
+  if (Array.isArray(node.video_versions) && node.video_versions.length) score += 40;
+  if (node.audio?.audio_src) score += 45;
+  if (Array.isArray(node.image_versions2?.candidates) && node.image_versions2.candidates.length) score += 10;
+  if (node.user?.username) score += 4;
+  if (node.caption?.text) score += 2;
+  return score;
+}
+
+function findThreadsPostNodeInSsr(html, code) {
+  if (!code) return null;
+  const found = [];
+
+  const walk = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    if (value.code === code) found.push(value);
+    for (const item of Object.values(value)) walk(item);
+  };
+
+  const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRe.exec(String(html || ""))) !== null) {
+    const attrs = String(match[1] || "");
+    if (
+      !/\btype=["']application\/json["']/i.test(attrs) ||
+      !/\bdata-sjs(?:\s|=|>|$)/i.test(attrs + ">")
+    ) {
+      continue;
+    }
+    try {
+      walk(JSON.parse(decodeThreadsSsrJson(match[2])));
+    } catch {}
+  }
+
+  if (!found.length) return null;
+  found.sort((a, b) => threadsNodeRichness(b) - threadsNodeRichness(a));
+  return found[0];
+}
+
+function collectThreadsNodeAudioCandidates(node) {
+  const candidates = [];
+  const seen = new Set();
+  const add = (url, kind, score) => {
+    const value = String(url || "").trim().replace(/&amp;/gi, "&");
+    if (!/^https?:\/\//i.test(value) || seen.has(value)) return;
+    seen.add(value);
+    candidates.push({ url: value, kind, score });
+  };
+
+  const mediaItems =
+    Array.isArray(node?.carousel_media) && node.carousel_media.length
+      ? node.carousel_media
+      : [node];
+
+  for (const item of mediaItems) {
+    if (!item || typeof item !== "object") continue;
+    const videoUrl = item.video_versions?.[0]?.url;
+    const hasAudio = item.has_audio ?? node?.has_audio;
+    if (videoUrl && hasAudio !== false) {
+      add(videoUrl, "video", 2200);
+    }
+    add(item.audio?.audio_src, "audio", 2100);
+  }
+
+  add(node?.audio?.audio_src, "audio", 2150);
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates;
+}
+
+async function fetchThreadsSsrMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const crawlerUa =
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+  let requestedCode = threadsPostCodeFromUrl(mediaUrl);
+  let lastError = "Threads SSR returned no post media";
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      const response = await fetch(mediaUrl, {
+        redirect: "follow",
+        headers: {
+          "user-agent": crawlerUa,
+          "accept-language": "en-US,en;q=0.9",
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      const html = await response.text();
+      const code =
+        requestedCode ||
+        threadsPostCodeFromUrl(response.url) ||
+        threadsCanonicalCodeFromHtml(html);
+      const node = findThreadsPostNodeInSsr(html, code);
+      const candidates = node ? collectThreadsNodeAudioCandidates(node) : [];
+
+      console.log(
+        `[SOCIAL-WORKER] threads SSR attempt=${attempt} status=${response.status} bytes=${html.length} code=${code || "-"} candidates=${candidates.length}`
+      );
+
+      for (const candidate of candidates) {
+        try {
+          const downloaded = await downloadThreadsHybridAsset(
+            candidate,
+            prefix,
+            "",
+            { referer: mediaUrl }
+          );
+          const metadata = threadsMetadataFromPayload(node, candidate.kind);
+          console.log(
+            `[SOCIAL-WORKER] threads SSR ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} attempt=${attempt} ms=${Date.now() - started}`
+          );
+          return {
+            filePath: downloaded.filePath,
+            metadata,
+            mediaKind: candidate.kind,
+          };
+        } catch (error) {
+          lastError = String(error?.message || error).slice(0, 500);
+        }
+      }
+
+      if (!node) {
+        lastError = code
+          ? "Threads SSR did not expose the requested post node"
+          : "Threads SSR did not expose a canonical post";
+      } else if (!candidates.length) {
+        lastError = "Threads post has no video audio or standalone music asset";
+      }
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+
+    if (attempt < 5) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  throw new Error(lastError);
+}
+
 async function fetchVxThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const original = new URL(mediaUrl);
@@ -3276,6 +3463,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
 
       const providers = effectiveMediaUrl !== mediaUrl
         ? [
+            ["ThreadsSSR", fetchThreadsSsrMedia],
             ["FixThreads", fetchFixThreadsMedia],
             ["FxThreads", fetchFxThreadsMedia],
             ["vxThreads", fetchVxThreadsMedia],
@@ -3285,6 +3473,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : shareAlias
           ? [
+              ["ThreadsSSR", fetchThreadsSsrMedia],
               ...(String(process.env.EASYDOWN_API_KEY || "").trim()
                 ? [["EasyDown", fetchEasyDownThreadsMedia]]
                 : []),
@@ -3298,6 +3487,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
               ["ThreadsDL", fetchThreadsDlMedia],
             ]
           : [
+              ["ThreadsSSR", fetchThreadsSsrMedia],
               ["FixThreads", fetchFixThreadsMedia],
               ["FxThreads", fetchFxThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
