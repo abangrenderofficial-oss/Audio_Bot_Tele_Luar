@@ -368,7 +368,7 @@ async def test_process_spotify_uses_shared_youtube_fallback_before_legacy_ytdlp(
         "duration": 204,
         "source_url": source_url,
     }
-    robust_result = spotify.MusicDownloadResult(
+    robust_result = SimpleNamespace(
         work_dir=str(tmp_path),
         paths=[str(audio_path)],
         bitrate_kbps=320,
