@@ -4311,7 +4311,7 @@ server.listen(PORT, HOST, () => {
     let testFile = null;
     try {
       const result = await runSocialWorkerAudio(
-        "https://www.threads.com/share/BAV6glx_i6/",
+        "https://www.threads.com/share/InQUBOY9S/",
         "threads"
       );
       testFile = result?.filePath || null;
