@@ -1483,13 +1483,18 @@ function collectThreadsHybridAssets(data) {
       if (!/^https:\/\//i.test(value.trim())) return;
       const hint = path.join(".").toLowerCase();
       const url = value.trim();
+      const imageExt = /\.(?:jpe?g|png|webp|gif|avif)(?:[?#]|$)/i.test(url);
       const audioExt = /\.(?:m4a|mp3|aac|ogg|opus|wav)(?:[?#]|$)/i.test(url);
       const videoExt = /\.(?:mp4|m3u8|mov|webm)(?:[?#]|$)/i.test(url);
       const audioHint = /audio|music|sound|song|track/.test(hint);
-      const videoHint = /video|play|cover|download|hd|sd/.test(hint);
+      const videoHint = /video|play|download|hd|sd/.test(hint);
 
-      if (audioExt || audioHint) add(url, "audio", 900 + (audioExt ? 80 : 0), hint);
-      if (videoExt || videoHint) add(url, "video", 1200 + (videoExt ? 120 : 0), hint);
+      if (!imageExt && (audioExt || audioHint)) {
+        add(url, "audio", 900 + (audioExt ? 80 : 0), hint);
+      }
+      if (!imageExt && (videoExt || videoHint)) {
+        add(url, "video", 1200 + (videoExt ? 120 : 0), hint);
+      }
       return;
     }
 
@@ -2613,18 +2618,50 @@ function collectThreadsNodeAudioCandidates(node) {
     if (!item || typeof item !== "object") return;
 
     // Threads image posts can carry a separate library-music asset even when
-    // there is no video. Meta exposes that audio through the same media node
-    // shapes used by Instagram/Threads SSR.
+    // there is no video. Meta has changed the nesting for this more than once,
+    // so keep the known paths and also deep-scan media-looking audio fields.
     const clips = item.clips_metadata || {};
     const musicAsset = clips?.music_info?.music_asset_info || {};
     const originalSound = clips?.original_sound_info || {};
     const metadataMusic =
       item?.music_metadata?.music_info?.music_asset_info || {};
 
-    add(musicAsset.progressive_download_url, "audio", baseScore + 40);
-    add(originalSound.progressive_download_url, "audio", baseScore + 30);
-    add(metadataMusic.progressive_download_url, "audio", baseScore + 20);
-    add(item.audio?.audio_src, "audio", baseScore + 10);
+    add(musicAsset.progressive_download_url, "audio", baseScore + 80);
+    add(musicAsset.audio_url, "audio", baseScore + 75);
+    add(musicAsset.url, "audio", baseScore + 70);
+    add(originalSound.progressive_download_url, "audio", baseScore + 65);
+    add(originalSound.audio_url, "audio", baseScore + 60);
+    add(metadataMusic.progressive_download_url, "audio", baseScore + 55);
+    add(metadataMusic.audio_url, "audio", baseScore + 50);
+    add(item.audio?.audio_src, "audio", baseScore + 45);
+    add(item.audio?.url, "audio", baseScore + 40);
+
+    const walkAudio = (value, path = []) => {
+      if (typeof value === "string") {
+        const url = String(value || "").trim().replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+        if (!/^https?:\/\//i.test(url)) return;
+        const hint = path.join(".").toLowerCase();
+        const imageExt = /\.(?:jpe?g|png|webp|gif|avif)(?:[?#]|$)/i.test(url);
+        const audioExt = /\.(?:m4a|mp3|aac|ogg|opus|wav)(?:[?#]|$)/i.test(url);
+        const audioPath =
+          /audio|music|sound|song|track|progressive_download|stream_url/.test(hint);
+        if (!imageExt && (audioExt || audioPath)) {
+          add(url, "audio", baseScore + (audioExt ? 35 : 15));
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((child, index) => walkAudio(child, [...path, String(index)]));
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [key, child] of Object.entries(value)) {
+          walkAudio(child, [...path, key]);
+        }
+      }
+    };
+
+    walkAudio(item);
   };
 
   for (const item of mediaItems) {
@@ -2706,6 +2743,30 @@ async function fetchThreadsSsrMedia(mediaUrl, prefix) {
           ? "Threads SSR did not expose the requested post node"
           : "Threads SSR did not expose a canonical post";
       } else if (!candidates.length) {
+        const audioHints = [];
+        const scanHints = (value, path = []) => {
+          if (typeof value === "string") {
+            const hint = path.join(".").toLowerCase();
+            if (/audio|music|sound|song|track/.test(hint)) {
+              audioHints.push(hint);
+            }
+            return;
+          }
+          if (Array.isArray(value)) {
+            value.forEach((child, index) => scanHints(child, [...path, String(index)]));
+            return;
+          }
+          if (value && typeof value === "object") {
+            for (const [key, child] of Object.entries(value)) {
+              scanHints(child, [...path, key]);
+            }
+          }
+        };
+        scanHints(node);
+        console.warn(
+          "[SOCIAL-WORKER] threads SSR audio-path hints=" +
+          [...new Set(audioHints)].slice(0, 40).join(",")
+        );
         lastError = "Threads post has no video audio or standalone music asset";
       }
     } catch (error) {
@@ -3685,8 +3746,15 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : [
             ["ThreadsSSR", fetchThreadsSsrMedia],
+            ["Microlink", fetchMicrolinkThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
+            ["FxThreads", fetchFxThreadsMedia],
+            ["VxThreads", fetchVxThreadsMedia],
+            ...(String(process.env.EASYDOWN_API_KEY || "").trim()
+              ? [["EasyDown", fetchEasyDownThreadsMedia]]
+              : []),
             ["FixThreads", fetchFixThreadsMedia],
+            ["DLPanda", fetchDlpandaThreadsMedia],
           ];
 
       let lastThreadsError = null;
