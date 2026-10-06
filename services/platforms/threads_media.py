@@ -972,13 +972,23 @@ async def resolve_threads_share_via_crawlers(url: str) -> str | None:
 
 
 def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
-    """Resolve a Threads share alias from a real Chromium extension page.
+    """Resolve a Threads share alias by executing fetch() inside a real
+    chrome-extension:// page.
 
-    This mirrors Threads Clean Link more faithfully than spoofing headers:
-    fetch() runs from a chrome-extension:// origin with host permission,
-    credentials omitted and redirects followed. The page writes response.url
-    into its own hash so Python can read it from the local DevTools target list.
+    The Threads Clean Link extension succeeds because the request originates
+    from an extension page with host permission. Run that exact fetch through
+    Chromium DevTools and read response.url directly instead of relying on
+    normal server-side HTTP semantics.
     """
+    try:
+        from websockets.sync.client import connect as ws_connect
+    except Exception as exc:
+        logging.warning(
+            "Threads real-extension resolver unavailable: websocket client error=%s",
+            exc,
+        )
+        return None
+
     binary = (
         shutil.which("chromium")
         or shutil.which("chromium-browser")
@@ -990,8 +1000,6 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
         return None
 
     extension_id = "hehokicokbgajpanjcajhmflaennnmdj"
-    # Public key from the open-source Threads Clean Link manifest. Keeping the
-    # same key gives the unpacked resolver the same stable extension origin.
     extension_key = (
         "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwsulpvef7Tggdw39ft9kn/"
         "AmboE4U5U+16uEir9kdo2CGvLqe2WbKLWnShqQj0XbDSMqASr8RgsSl6fkhSRfEW"
@@ -1029,42 +1037,14 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
             ) as handle:
                 json.dump(manifest, handle)
 
-            html = """<!doctype html><meta charset="utf-8"><script src="resolver.js"></script>"""
             with open(
                 os.path.join(extension_dir, "resolver.html"),
                 "w",
                 encoding="utf-8",
             ) as handle:
-                handle.write(html)
+                handle.write("<!doctype html><meta charset=\"utf-8\"><title>resolver</title>")
 
-            script = f"""
-(async () => {{
-  const target = {json.dumps(url)};
-  try {{
-    const response = await fetch(target, {{
-      method: "GET",
-      credentials: "omit",
-      redirect: "follow",
-      headers: {{ "Accept-Language": "en" }}
-    }});
-    location.hash = "done=" + encodeURIComponent(response.url);
-  }} catch (error) {{
-    location.hash = "error=" + encodeURIComponent(
-      String(error && error.message || error || "fetch_failed")
-    );
-  }}
-}})();
-"""
-            with open(
-                os.path.join(extension_dir, "resolver.js"),
-                "w",
-                encoding="utf-8",
-            ) as handle:
-                handle.write(script)
-
-            resolver_url = (
-                f"chrome-extension://{extension_id}/resolver.html"
-            )
+            resolver_url = f"chrome-extension://{extension_id}/resolver.html"
             command = [
                 binary,
                 "--headless=new",
@@ -1078,12 +1058,15 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
                 "--lang=en-US",
                 "--remote-debugging-address=127.0.0.1",
                 "--remote-debugging-port=0",
+                "--remote-allow-origins=*",
                 f"--user-data-dir={profile_dir}",
                 f"--disable-extensions-except={extension_dir}",
                 f"--load-extension={extension_dir}",
             ]
             if proxy:
                 command.append(f"--proxy-server={proxy}")
+            else:
+                command.append("--no-proxy-server")
             command.append(resolver_url)
 
             process = subprocess.Popen(
@@ -1118,9 +1101,9 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
                 continue
 
             endpoint = f"http://127.0.0.1:{port}/json"
-            deadline = time.monotonic() + 15.0
-            last_target_url = ""
-            while time.monotonic() < deadline:
+            target: dict[str, object] | None = None
+            target_deadline = time.monotonic() + 6.0
+            while time.monotonic() < target_deadline:
                 if process.poll() is not None:
                     break
                 try:
@@ -1129,54 +1112,161 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
                             response.read().decode("utf-8", errors="replace")
                         )
                     if isinstance(targets, list):
-                        for target in targets:
-                            if not isinstance(target, dict) or target.get("type") != "page":
-                                continue
-                            current = str(target.get("url") or "")
-                            if not current.startswith(resolver_url):
-                                continue
-                            last_target_url = current
-                            parsed = urlparse(current)
-                            fragment = parsed.fragment or ""
-                            if fragment.startswith("done="):
-                                from urllib.parse import unquote
-
-                                final_url = unquote(fragment[5:])
-                                resolved = strip_threads_url(final_url)
-                                if extract_threads_post_code(resolved):
-                                    logging.info(
-                                        "Resolved Threads share URL via real Chromium extension: "
-                                        "mode=%s %s -> %s",
-                                        mode,
-                                        url,
-                                        resolved,
-                                    )
-                                    return resolved
-                                logging.warning(
-                                    "Threads real-extension fetch kept share alias: "
-                                    "mode=%s final=%s",
-                                    mode,
-                                    final_url[:300],
-                                )
+                        for item in targets:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "page"
+                                and str(item.get("url") or "").startswith(resolver_url)
+                                and item.get("webSocketDebuggerUrl")
+                            ):
+                                target = item
                                 break
-                            if fragment.startswith("error="):
-                                from urllib.parse import unquote
-
-                                logging.warning(
-                                    "Threads real-extension fetch failed: mode=%s error=%s",
-                                    mode,
-                                    unquote(fragment[6:])[:300],
-                                )
-                                break
+                    if target is not None:
+                        break
                 except Exception:
                     pass
                 time.sleep(0.2)
 
+            if target is None:
+                logging.warning(
+                    "Threads real-extension resolver found no extension page target: mode=%s",
+                    mode,
+                )
+                continue
+
+            ws_url = str(target.get("webSocketDebuggerUrl") or "")
+            expression = f"""
+(async () => {{
+  try {{
+    const response = await fetch({json.dumps(url)}, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
+    }});
+    return JSON.stringify({{
+      ok: true,
+      url: response.url,
+      status: response.status,
+      type: response.type
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: String(error && error.message || error || "fetch_failed")
+    }});
+  }}
+}})()
+"""
+
+            with ws_connect(
+                ws_url,
+                open_timeout=4,
+                close_timeout=1,
+            ) as websocket:
+                enable_id = 31
+                websocket.send(
+                    json.dumps(
+                        {
+                            "id": enable_id,
+                            "method": "Runtime.enable",
+                        }
+                    )
+                )
+                context_id = None
+                context_deadline = time.monotonic() + 6.0
+                while time.monotonic() < context_deadline and context_id is None:
+                    try:
+                        raw = websocket.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    payload = json.loads(raw)
+                    if payload.get("method") != "Runtime.executionContextCreated":
+                        continue
+                    context = payload.get("params", {}).get("context", {})
+                    aux = context.get("auxData") or {}
+                    if aux.get("isDefault") is True and context.get("id") is not None:
+                        context_id = int(context["id"])
+
+                if context_id is None:
+                    logging.warning(
+                        "Threads real-extension resolver found no execution context: mode=%s",
+                        mode,
+                    )
+                    continue
+
+                request_id = 32
+                websocket.send(
+                    json.dumps(
+                        {
+                            "id": request_id,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": expression,
+                                "contextId": context_id,
+                                "awaitPromise": True,
+                                "returnByValue": True,
+                            },
+                        }
+                    )
+                )
+                response_payload = None
+                response_deadline = time.monotonic() + 18.0
+                while time.monotonic() < response_deadline:
+                    try:
+                        raw = websocket.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    payload = json.loads(raw)
+                    if payload.get("id") == request_id:
+                        response_payload = payload
+                        break
+
+            if not isinstance(response_payload, dict):
+                logging.warning(
+                    "Threads real-extension fetch timed out: mode=%s",
+                    mode,
+                )
+                continue
+            if response_payload.get("error"):
+                logging.warning(
+                    "Threads real-extension CDP command failed: mode=%s error=%s",
+                    mode,
+                    str(response_payload.get("error"))[:300],
+                )
+                continue
+
+            remote = (
+                response_payload.get("result", {})
+                .get("result", {})
+                .get("value")
+            )
+            try:
+                fetch_result = json.loads(remote) if isinstance(remote, str) else {}
+            except json.JSONDecodeError:
+                fetch_result = {}
+
+            final_url = str(fetch_result.get("url") or "").strip()
+            resolved = strip_threads_url(final_url)
+            if extract_threads_post_code(resolved):
+                logging.info(
+                    "Resolved Threads share URL via real Chromium extension: "
+                    "mode=%s status=%s %s -> %s",
+                    mode,
+                    fetch_result.get("status"),
+                    url,
+                    resolved,
+                )
+                return resolved
+
             logging.warning(
-                "Threads real-extension resolver did not return canonical URL: "
-                "mode=%s target=%s",
+                "Threads real-extension fetch did not resolve canonical post: "
+                "mode=%s status=%s type=%s final=%s error=%s",
                 mode,
-                last_target_url[:300] or "-",
+                fetch_result.get("status"),
+                fetch_result.get("type"),
+                final_url[:300] or "-",
+                str(fetch_result.get("error") or "-")[:200],
             )
         except Exception as exc:
             logging.warning(
