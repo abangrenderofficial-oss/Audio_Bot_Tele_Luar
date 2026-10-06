@@ -291,27 +291,8 @@ async def test_soundcloud_fast_path_adds_connected_group_playlist(monkeypatch):
         business_connection_id=None,
         chat=SimpleNamespace(id=-100777, type="supergroup"),
         answer=AsyncMock(return_value=SimpleNamespace(delete=AsyncMock())),
-        reply_audio=AsyncMock(
-            return_value=SimpleNamespace(
-                message_id=654,
-                audio=SimpleNamespace(
-                    file_id="soundcloud-telegram-file-id-123456",
-                    title="Track Title",
-                    performer="Artist Name",
-                    duration=124,
-                ),
-            )
-        ),
+        reply_audio=AsyncMock(),
         reply=AsyncMock(),
-    )
-    track = soundcloud.SoundCloudTrack(
-        id="trackhash",
-        source_url="https://on.soundcloud.com/t6e6Wwo57tyYeObzcG",
-        audio_url="https://cobalt.example/tunnel/audio-token",
-        title="Track Title",
-        artist="Artist Name",
-        thumbnail_url=None,
-        duration_seconds=124,
     )
 
     monkeypatch.setattr(
@@ -353,6 +334,135 @@ async def test_soundcloud_fast_path_adds_connected_group_playlist(monkeypatch):
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
+        soundcloud,
+        "send_social_fast_to_telegram",
+        AsyncMock(
+            return_value={
+                "file_id": "soundcloud-telegram-file-id-123456",
+                "message_id": 654,
+                "title": "ESHGHE ABADIM",
+                "performer": "Tiem",
+                "duration": 124,
+                "file_size": 4_900_000,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        soundcloud.soundcloud_service,
+        "fetch_track",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(soundcloud, "send_chat_action_if_needed", AsyncMock())
+    monkeypatch.setattr(soundcloud, "safe_edit_text", AsyncMock(return_value=True))
+    monkeypatch.setattr(soundcloud, "safe_delete_message", AsyncMock())
+    monkeypatch.setattr(soundcloud, "update_info", AsyncMock())
+    monkeypatch.setattr(soundcloud, "maybe_delete_user_message", AsyncMock())
+
+    await soundcloud.process_soundcloud(
+        message,
+        direct_url="https://on.soundcloud.com/t6e6Wwo57tyYeObzcG",
+    )
+
+    soundcloud.send_social_fast_to_telegram.assert_awaited_once_with(
+        "https://on.soundcloud.com/t6e6Wwo57tyYeObzcG",
+        source="soundcloud",
+        chat_id=-100777,
+        business_connection_id=None,
+    )
+    soundcloud.soundcloud_service.fetch_track.assert_not_awaited()
+    message.reply_audio.assert_not_awaited()
+
+    soundcloud.store_cached_social_audio.assert_awaited_once()
+    cache_kwargs = soundcloud.store_cached_social_audio.await_args.kwargs
+    assert cache_kwargs["telegram_file_id"] == "soundcloud-telegram-file-id-123456"
+    assert cache_kwargs["variant"] == "fast_original"
+    assert cache_kwargs["title"] == "ESHGHE ABADIM"
+    assert cache_kwargs["performer"] == "Tiem"
+
+    soundcloud.db.add_music_group_track.assert_awaited_once()
+    playlist_kwargs = soundcloud.db.add_music_group_track.await_args.kwargs
+    assert playlist_kwargs["service"] == "soundcloud"
+    assert playlist_kwargs["source_url"] == (
+        "https://on.soundcloud.com/t6e6Wwo57tyYeObzcG"
+    )
+    assert playlist_kwargs["title"] == "ESHGHE ABADIM"
+    assert playlist_kwargs["performer"] == "Tiem"
+    assert playlist_kwargs["telegram_file_id"] == (
+        "soundcloud-telegram-file-id-123456"
+    )
+    assert playlist_kwargs["source_message_id"] == 321
+    assert playlist_kwargs["audio_message_id"] == 654
+
+
+@pytest.mark.asyncio
+async def test_soundcloud_fast_worker_failure_falls_back_to_cobalt(monkeypatch):
+    message = SimpleNamespace(
+        message_id=322,
+        from_user=SimpleNamespace(id=7, username="tester", full_name="Tester"),
+        business_connection_id=None,
+        chat=SimpleNamespace(id=777, type="private"),
+        answer=AsyncMock(return_value=SimpleNamespace(delete=AsyncMock())),
+        reply_audio=AsyncMock(
+            return_value=SimpleNamespace(
+                message_id=655,
+                audio=SimpleNamespace(
+                    file_id="cobalt-file-id-123456",
+                    title="Fallback Track",
+                    performer="Fallback Artist",
+                    duration=125,
+                ),
+            )
+        ),
+        reply=AsyncMock(),
+    )
+    track = soundcloud.SoundCloudTrack(
+        id="trackhash",
+        source_url="https://on.soundcloud.com/t6e6Wwo57tyYeObzcG",
+        audio_url="https://cobalt.example/tunnel/audio-token",
+        title="Fallback Track",
+        artist="Fallback Artist",
+        thumbnail_url=None,
+        duration_seconds=125,
+    )
+
+    monkeypatch.setattr(
+        soundcloud,
+        "should_skip_duplicate_business_message",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(soundcloud, "react_to_message", AsyncMock())
+    monkeypatch.setattr(soundcloud, "send_analytics", AsyncMock())
+    monkeypatch.setattr(
+        soundcloud,
+        "load_user_settings",
+        AsyncMock(return_value={"captions": "off", "delete_message": "off"}),
+    )
+    monkeypatch.setattr(
+        soundcloud,
+        "get_bot_url",
+        AsyncMock(return_value="https://t.me/maxloadbot"),
+    )
+    monkeypatch.setattr(
+        soundcloud,
+        "get_bot_avatar_thumbnail",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        soundcloud,
+        "get_cached_social_audio",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        soundcloud,
+        "store_cached_social_audio",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        soundcloud,
+        "send_social_fast_to_telegram",
+        AsyncMock(side_effect=RuntimeError("worker unavailable")),
+    )
+    monkeypatch.setattr(
         soundcloud.soundcloud_service,
         "fetch_track",
         AsyncMock(return_value=track),
@@ -373,28 +483,8 @@ async def test_soundcloud_fast_path_adds_connected_group_playlist(monkeypatch):
     )
     kwargs = message.reply_audio.await_args.kwargs
     assert kwargs["audio"] == "https://cobalt.example/tunnel/audio-token"
-    assert kwargs["title"] == "Track Title"
-    assert kwargs["performer"] == "Artist Name"
-    assert kwargs["duration"] == 124
-
-    soundcloud.store_cached_social_audio.assert_awaited_once()
-    cache_kwargs = soundcloud.store_cached_social_audio.await_args.kwargs
-    assert cache_kwargs["telegram_file_id"] == "soundcloud-telegram-file-id-123456"
-    assert cache_kwargs["variant"] == "fast_original"
-
-    soundcloud.db.add_music_group_track.assert_awaited_once()
-    playlist_kwargs = soundcloud.db.add_music_group_track.await_args.kwargs
-    assert playlist_kwargs["service"] == "soundcloud"
-    assert playlist_kwargs["source_url"] == (
-        "https://on.soundcloud.com/t6e6Wwo57tyYeObzcG"
-    )
-    assert playlist_kwargs["title"] == "Track Title"
-    assert playlist_kwargs["performer"] == "Artist Name"
-    assert playlist_kwargs["telegram_file_id"] == (
-        "soundcloud-telegram-file-id-123456"
-    )
-    assert playlist_kwargs["source_message_id"] == 321
-    assert playlist_kwargs["audio_message_id"] == 654
+    assert kwargs["title"] == "Fallback Track"
+    assert kwargs["performer"] == "Fallback Artist"
 
 
 @pytest.mark.asyncio

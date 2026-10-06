@@ -44,6 +44,7 @@ _SOURCE_LABELS = {
     "instagram": "Instagram",
     "threads": "Threads",
     "twitter": "X / Twitter",
+    "soundcloud": "SoundCloud",
 }
 
 
@@ -1481,7 +1482,7 @@ async def send_social_fast_to_telegram(
     business_connection_id: str | None = None,
 ) -> dict[str, Any]:
     source = str(source or "").strip().lower()
-    if source not in {"tiktok", "instagram", "threads", "twitter"}:
+    if source not in {"tiktok", "instagram", "threads", "twitter", "soundcloud"}:
         raise MusicDownloadError(f"Unsupported social source: {source}")
 
     if source == "threads":
