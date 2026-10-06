@@ -29,6 +29,7 @@ from app_context import bot, db
 from config import ADMINS_UID, OUTPUT_DIR
 from filters import IsBotAdmin
 from services.logger import ERROR_LOG, EVENT_LOG, INFO_LOG, PERF_LOG, logger as logging
+from services.admin_music_monitor import is_admin_music_owner
 from services.download.queue import get_download_queue
 from services.runtime.analytics_status import get_snapshot as get_analytics_runtime_snapshot
 from services.runtime.rate_limiter import broadcast_limiter
@@ -608,6 +609,44 @@ async def _cleanup_downloads_once() -> str:
         return f"The folder '{OUTPUT_DIR}' does not exist."
     removed_files, skipped_recent_files, removed_dirs = await asyncio.to_thread(_cleanup_download_tree)
     return bm.downloads_cleanup_finished(removed_files, removed_dirs, skipped_recent_files)
+
+
+@router.message(Command("menuadmin"))
+async def admin_command_menu(message: types.Message) -> None:
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if not is_admin_music_owner(user_id):
+        return
+
+    chat_type = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
+    if chat_type != "private":
+        return
+
+    text = (
+        "🔐 <b>Admin Command Menu</b>\n\n"
+        "<b>Private / User</b>\n"
+        "/start — Start bot\n"
+        "/help — Supported links & bantuan\n"
+        "/stats — Statistik penggunaan\n"
+        "/settings — Tetapan user\n"
+        "/remove_keyboard — Buang reply keyboard\n\n"
+        "<b>Music Group</b>\n"
+        "/connectmusic — Aktifkan Music Group\n"
+        "/playlist — Lihat playlist group\n"
+        "/playall — Hantar semua lagu dari awal\n"
+        "/search — Cari lagu\n"
+        "/clearlink — Buang link asal yang diproses\n"
+        "/clearall — Bersihkan group, tinggal audio\n"
+        "/playsync — Info PlaySync\n"
+        "/stopsync — Keluar PlaySync\n\n"
+        "<b>Admin</b>\n"
+        "/admin — Admin dashboard\n"
+        "/perf — Performance metrics\n"
+        "/session — Runtime/session metrics\n"
+        "/connectadminmusic — Connect group pemantau private-user music\n"
+        "/menuadmin — Paparkan menu command admin ini\n\n"
+        "⚠️ /connectadminmusic dan /menuadmin hanya untuk owner."
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("admin"), IsBotAdmin())
