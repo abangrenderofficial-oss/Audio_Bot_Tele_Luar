@@ -2603,17 +2603,41 @@ function collectThreadsNodeAudioCandidates(node) {
       ? node.carousel_media
       : [node];
 
+  const addMusicAssets = (item, baseScore = 2160) => {
+    if (!item || typeof item !== "object") return;
+
+    // Threads image posts can carry a separate library-music asset even when
+    // there is no video. Meta exposes that audio through the same media node
+    // shapes used by Instagram/Threads SSR.
+    const clips = item.clips_metadata || {};
+    const musicAsset = clips?.music_info?.music_asset_info || {};
+    const originalSound = clips?.original_sound_info || {};
+    const metadataMusic =
+      item?.music_metadata?.music_info?.music_asset_info || {};
+
+    add(musicAsset.progressive_download_url, "audio", baseScore + 40);
+    add(originalSound.progressive_download_url, "audio", baseScore + 30);
+    add(metadataMusic.progressive_download_url, "audio", baseScore + 20);
+    add(item.audio?.audio_src, "audio", baseScore + 10);
+  };
+
   for (const item of mediaItems) {
     if (!item || typeof item !== "object") continue;
     const videoUrl = item.video_versions?.[0]?.url;
     const hasAudio = item.has_audio ?? node?.has_audio;
+
+    // Fast/default path: if the post has a playable video with audio, extract
+    // the audio from that video exactly as the user hears it in Threads.
     if (videoUrl && hasAudio !== false) {
-      add(videoUrl, "video", 2200);
+      add(videoUrl, "video", 2300);
     }
-    add(item.audio?.audio_src, "audio", 2100);
+
+    // Image + Threads music path, and fallback for posts where Meta exposes a
+    // separate audio asset instead of muxing it into the video rendition.
+    addMusicAssets(item, 2160);
   }
 
-  add(node?.audio?.audio_src, "audio", 2150);
+  addMusicAssets(node, 2180);
 
   candidates.sort((a, b) => b.score - a.score);
   return candidates;
