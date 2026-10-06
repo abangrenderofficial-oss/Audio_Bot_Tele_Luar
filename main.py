@@ -388,11 +388,11 @@ async def _run_social_music_selftest_from_env() -> None:
         ),
         (
             "threads",
-            "https://www.threads.com/share/BAV6glx_i6/",
+            "https://www.threads.com/share/BAS3TS_OHB/",
         ),
     ]
 
-    control_share = "https://www.threads.com/share/InQUBOY9S/"
+    control_share = "https://www.threads.com/share/BAS3TS_OHB/"
     try:
         control_resolved = await resolve_threads_share_fast(control_share)
         logging.info(
