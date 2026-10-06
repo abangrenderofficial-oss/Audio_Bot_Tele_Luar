@@ -1143,6 +1143,51 @@ function isThreadsShareAlias(value) {
 }
 
 
+async function resolveThreadsShareViaTelegramBot(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  try {
+    const response = await fetch(mediaUrl, {
+      redirect: "follow",
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; TelegramBot)",
+        "accept": "text/html,*/*",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    const html = await response.text();
+    const candidates = [
+      response.url,
+      ...(html.match(
+        /<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i
+      ) || []).slice(1),
+      ...(html.match(
+        /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i
+      ) || []).slice(1),
+    ];
+    for (const value of candidates) {
+      const match = String(value || "").match(
+        /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+      );
+      if (match) {
+        console.log(
+          `[SOCIAL-WORKER] threads TelegramBot resolved share -> ${match[0]}`
+        );
+        return match[0];
+      }
+    }
+    console.warn(
+      `[SOCIAL-WORKER] threads TelegramBot resolver miss status=${response.status} final=${response.url}`
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads TelegramBot resolver failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaRedirectChecker(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -2188,20 +2233,29 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     let effectiveMediaUrl = mediaUrl;
     if (source === "threads") {
       const shareAlias = isThreadsShareAlias(mediaUrl);
-      const providers = shareAlias
+      if (shareAlias) {
+        effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+      }
+
+      const providers = effectiveMediaUrl !== mediaUrl
         ? [
-            ["DLPanda", fetchDlpandaThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
+            ["DLPanda", fetchDlpandaThreadsMedia],
           ]
-        : [
-            ["ThreadsDL", fetchThreadsDlMedia],
-            ["DLPanda", fetchDlpandaThreadsMedia],
-          ];
+        : shareAlias
+          ? [
+              ["DLPanda", fetchDlpandaThreadsMedia],
+              ["ThreadsDL", fetchThreadsDlMedia],
+            ]
+          : [
+              ["ThreadsDL", fetchThreadsDlMedia],
+              ["DLPanda", fetchDlpandaThreadsMedia],
+            ];
 
       for (const [providerName, provider] of providers) {
         try {
           console.log(`[SOCIAL-WORKER] threads ${providerName} hybrid start`);
-          threadsProvider = await provider(mediaUrl, prefix);
+          threadsProvider = await provider(effectiveMediaUrl, prefix);
           providerRawPath = threadsProvider.filePath;
           break;
         } catch (error) {
@@ -2215,7 +2269,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
 
       // Only canonicalize if both direct media providers failed. This keeps
       // normal Threads requests fast while retaining yt-dlp as a final fallback.
-      if (!providerRawPath) {
+      if (!providerRawPath && effectiveMediaUrl === mediaUrl) {
         effectiveMediaUrl = await resolveThreadsShareViaRedirectChecker(mediaUrl);
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaLinkExpander(mediaUrl);
