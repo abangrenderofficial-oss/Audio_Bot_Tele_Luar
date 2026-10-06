@@ -73,3 +73,30 @@ async def test_reply_tracked_records_bot_text(monkeypatch):
         message_id=555,
         kind="bot_text",
     )
+
+
+@pytest.mark.asyncio
+async def test_connectmusic_can_be_used_by_regular_group_member(monkeypatch):
+    message = DummyMessage()
+    message.reply = AsyncMock(return_value=SimpleNamespace(message_id=700))
+    fake_db = SimpleNamespace(
+        set_music_group_connected=AsyncMock(),
+        get_music_group_track_count=AsyncMock(return_value=0),
+        add_music_group_cleanup_message=AsyncMock(),
+    )
+    admin_gate = AsyncMock(side_effect=AssertionError("admin gate must not be called"))
+
+    monkeypatch.setattr(group_music, "db", fake_db)
+    monkeypatch.setattr(group_music, "_ensure_group_record", AsyncMock())
+    monkeypatch.setattr(group_music, "_require_group_admin", admin_gate)
+
+    await group_music.connect_music_group(message)
+
+    admin_gate.assert_not_awaited()
+    fake_db.set_music_group_connected.assert_awaited_once_with(
+        message.chat.id,
+        connected=True,
+        connected_by_user_id=message.from_user.id,
+    )
+    message.reply.assert_awaited_once()
+
