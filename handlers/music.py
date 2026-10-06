@@ -67,6 +67,88 @@ logging = logging.bind(service="music")
 
 router = Router(name=__name__)
 
+_YOUTUBE_LYRIC_BRACKET_RE = re.compile(
+    r"[\(\[\{][^\)\]\}]*\b(?:lyrics?|lirik)\b[^\)\]\}]*[\)\]\}]",
+    flags=re.IGNORECASE,
+)
+_YOUTUBE_LYRIC_WORD_RE = re.compile(
+    r"\b(?:official\s+)?(?:lyrics?|lirik)(?:\s+video)?\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _clean_youtube_title(value: object) -> str:
+    title = html.unescape(str(value or "Audio")).strip()
+    title = _YOUTUBE_LYRIC_BRACKET_RE.sub(" ", title)
+    title = _YOUTUBE_LYRIC_WORD_RE.sub(" ", title)
+    title = re.sub(r"\s{2,}", " ", title)
+    title = re.sub(r"\s*[-–—|•:·]+\s*$", "", title).strip()
+    return title or "Audio"
+
+
+async def _enforce_youtube_clean_fast_message(
+    *,
+    chat_id: int,
+    message_id: object,
+    file_id: object,
+    title: object,
+    performer: object,
+    duration: object,
+    business_connection_id: str | None,
+) -> None:
+    if message_id is None or not file_id:
+        return
+
+    clean_title = _clean_youtube_title(title)
+    media_kwargs: dict[str, object] = {
+        "media": str(file_id),
+        "title": clean_title,
+        "caption": f"🎵 {html.escape(clean_title)}",
+        "parse_mode": "HTML",
+    }
+    if performer:
+        media_kwargs["performer"] = str(performer)
+    try:
+        parsed_duration = int(float(duration)) if duration is not None else 0
+    except (TypeError, ValueError):
+        parsed_duration = 0
+    if parsed_duration > 0:
+        media_kwargs["duration"] = parsed_duration
+
+    kwargs: dict[str, object] = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "media": types.InputMediaAudio(**media_kwargs),
+    }
+    if business_connection_id:
+        kwargs["business_connection_id"] = business_connection_id
+
+    try:
+        await bot.edit_message_media(**kwargs)
+    except Exception as exc:
+        logging.warning(
+            "YouTube clean-title media edit failed: message_id=%s error=%s",
+            message_id,
+            exc,
+        )
+        caption_kwargs: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": int(message_id),
+            "caption": f"🎵 {html.escape(clean_title)}",
+            "parse_mode": "HTML",
+        }
+        if business_connection_id:
+            caption_kwargs["business_connection_id"] = business_connection_id
+        try:
+            await bot.edit_message_caption(**caption_kwargs)
+        except Exception as caption_exc:
+            logging.warning(
+                "YouTube clean-title caption edit failed: message_id=%s error=%s",
+                message_id,
+                caption_exc,
+            )
+
+
 _FAST_YOUTUBE_INFLIGHT: dict[str, asyncio.Future[dict[str, object]]] = {}
 _FAST_YOUTUBE_INFLIGHT_LOCK = asyncio.Lock()
 
@@ -500,16 +582,13 @@ async def process_music_link(
                 remote_variant if remote_cached else "miss",
             )
             if remote_cached:
-                cached_title = str(remote_cached.get("title") or "Audio")
+                cached_title = _clean_youtube_title(
+                    remote_cached.get("title") or "Audio"
+                )
                 cached_performer = str(
                     remote_cached.get("performer") or "YouTube"
                 )
                 cached_duration = remote_cached.get("duration_seconds")
-                quality_label = (
-                    "320 kbps"
-                    if remote_variant == "mp3_320"
-                    else "Original Quality"
-                )
                 try:
                     await safe_edit_text(status_message, bm.uploading_status())
                     await send_chat_action_if_needed(
@@ -524,9 +603,7 @@ async def process_music_link(
                         audio=str(remote_cached["telegram_file_id"]),
                         title=cached_title,
                         performer=cached_performer,
-                        caption=(
-                            f"🎵 {html.escape(cached_title)}\n{quality_label}"
-                        ),
+                        caption=f"🎵 {html.escape(cached_title)}",
                         bot_url=bot_url,
                         duration=cached_duration,
                         parse_mode="HTML",
@@ -655,7 +732,7 @@ async def process_music_link(
                             )
                         )
 
-                    shared_title = str(
+                    shared_title = _clean_youtube_title(
                         shared_result.get("title") or "Audio"
                     )
                     shared_performer = str(
@@ -676,9 +753,7 @@ async def process_music_link(
                         audio=str(shared_result["file_id"]),
                         title=shared_title,
                         performer=shared_performer,
-                        caption=(
-                            f"🎵 {html.escape(shared_title)}\nOriginal Quality"
-                        ),
+                        caption=f"🎵 {html.escape(shared_title)}",
                         bot_url=bot_url,
                         duration=shared_duration,
                         parse_mode="HTML",
@@ -721,6 +796,7 @@ async def process_music_link(
                         source_url,
                         chat_id=message.chat.id,
                         business_connection_id=business_id,
+                        caption_title_only=True,
                     )
                 except Exception as exc:
                     fast_error = exc
@@ -737,11 +813,23 @@ async def process_music_link(
                             {"ok": False, "error": str(exc)}
                         )
                 else:
-                    fast_title = str(fast_result.get("title") or "Audio")
+                    fast_title = _clean_youtube_title(
+                        fast_result.get("title") or "Audio"
+                    )
                     fast_performer = str(
                         fast_result.get("performer") or "YouTube"
                     )
                     fast_duration = fast_result.get("duration")
+
+                    await _enforce_youtube_clean_fast_message(
+                        chat_id=message.chat.id,
+                        message_id=fast_result.get("message_id"),
+                        file_id=fast_result.get("file_id"),
+                        title=fast_title,
+                        performer=fast_performer,
+                        duration=fast_duration,
+                        business_connection_id=business_id,
+                    )
 
                     if (
                         shared_fast_future is not None
@@ -1040,13 +1128,18 @@ async def process_music_link(
             service_name,
         )
         plan = make_music_plan(metadata.duration)
+        display_title = (
+            _clean_youtube_title(metadata.title)
+            if service_name == "youtube"
+            else metadata.title
+        )
 
         if status_message:
             if plan.mode == "single":
                 await safe_edit_text(
                     status_message,
                     (
-                        f"🎧 {metadata.title}\n\n"
+                        f"🎧 {display_title}\n\n"
                         f"Adaptive quality: {plan.bitrate_kbps} kbps. "
                         "Sedang sediakan MP3..."
                     ),
@@ -1055,7 +1148,7 @@ async def process_music_link(
                 await safe_edit_text(
                     status_message,
                     (
-                        f"🎧 {metadata.title}\n\n"
+                        f"🎧 {display_title}\n\n"
                         "Audio terlalu panjang untuk satu fail pada minimum 128 kbps. "
                         "Bot akan kekalkan 128 kbps dan split automatik."
                     ),
@@ -1074,9 +1167,9 @@ async def process_music_link(
             await send_audio_with_thumbnail(
                 audio_sender,
                 audio=cached_file_id,
-                title=metadata.title,
+                title=display_title,
                 performer=metadata.performer,
-                caption=f"🎵 {html.escape(metadata.title)}",
+                caption=f"🎵 {html.escape(display_title)}",
                 bot_url=bot_url,
                 duration=metadata.duration,
                 parse_mode="HTML",
@@ -1104,7 +1197,7 @@ async def process_music_link(
                 await safe_edit_text(
                     status_message,
                     (
-                        f"🎧 {metadata.title}\n\n"
+                        f"🎧 {display_title}\n\n"
                         f"Downloading audio • {plan.bitrate_kbps} kbps..."
                     ),
                 )
@@ -1145,17 +1238,17 @@ async def process_music_link(
 
         for index, path in enumerate(result.paths, start=1):
             if total_parts > 1:
-                title = f"{metadata.title} — Part {index}"
-                filename_title = f"{metadata.file_base} — Part {index}"
+                title = f"{display_title} — Part {index}"
+                filename_title = f"{display_title} — Part {index}"
                 caption = (
-                    f"🎵 {html.escape(metadata.title)}\n"
+                    f"🎵 {html.escape(display_title)}\n"
                     f"Part {index}/{total_parts} • {result.bitrate_kbps} kbps"
                 )
                 duration = None
             else:
-                title = metadata.title
-                filename_title = metadata.file_base
-                caption = f"🎵 {html.escape(metadata.title)}\n{result.bitrate_kbps} kbps"
+                title = display_title
+                filename_title = display_title
+                caption = f"🎵 {html.escape(display_title)}\n{result.bitrate_kbps} kbps"
                 duration = metadata.duration
 
             stage_started = time.perf_counter()
