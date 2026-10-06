@@ -1619,7 +1619,7 @@ async function fetchVxThreadsMedia(mediaUrl, prefix) {
   const telegramUa = "Mozilla/5.0 (compatible; TelegramBot)";
 
   const metaValue = (html, property) => {
-    const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\    const escaped = property.replace(/[.*+?^{}()|[\]\\]/g, "\\async function fetchThreadsDlMedia(mediaUrl, prefix) {");");
+    const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const a = html.match(
       new RegExp(
         '<meta[^>]+(?:property|name)=["\\\']' + escaped +
