@@ -6,7 +6,7 @@ import json
 import shutil
 from typing import Iterable
 
-from aiogram import F, Router, types
+from aiogram import Router, types
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.media_group import MediaGroupBuilder
 
