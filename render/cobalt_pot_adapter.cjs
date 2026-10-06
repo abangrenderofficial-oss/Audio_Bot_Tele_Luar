@@ -1143,6 +1143,58 @@ function isThreadsShareAlias(value) {
 }
 
 
+async function resolveThreadsShareViaCrawler(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  const crawlerUa =
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      const response = await fetch(mediaUrl, {
+        redirect: "follow",
+        headers: {
+          "user-agent": crawlerUa,
+          "accept-language": "en-US,en;q=0.9",
+          "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      const html = await response.text();
+      const meta =
+        html.match(/<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:url["']/i);
+      const candidate = String(meta?.[1] || response.url || "")
+        .replace(/&#0?64;/gi, "@")
+        .replace(/&amp;/gi, "&");
+      const match = candidate.match(
+        /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+      );
+      if (match) {
+        console.log(
+          "[SOCIAL-WORKER] threads crawler resolved share attempt=" +
+          attempt + " -> " + match[0]
+        );
+        return match[0];
+      }
+      console.log(
+        "[SOCIAL-WORKER] threads crawler miss attempt=" + attempt +
+        " status=" + response.status + " bytes=" + html.length
+      );
+    } catch (error) {
+      console.warn(
+        "[SOCIAL-WORKER] threads crawler failed attempt=" + attempt + ":",
+        String(error?.message || error).slice(0, 300)
+      );
+    }
+    if (attempt < 5) {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+  }
+
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaTelegramBot(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -2274,6 +2326,9 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       const shareAlias = isThreadsShareAlias(mediaUrl);
       if (shareAlias) {
         effectiveMediaUrl = await resolveThreadsShareViaPlainClient(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaCrawler(mediaUrl);
+        }
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
         }
