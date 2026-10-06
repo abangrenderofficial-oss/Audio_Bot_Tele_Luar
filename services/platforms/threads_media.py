@@ -1189,6 +1189,13 @@ async def resolve_threads_url(
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
 
+    extension_resolved = await asyncio.to_thread(
+        _resolve_threads_share_with_extension_fetch_sync,
+        candidate,
+    )
+    if extension_resolved:
+        return extension_resolved
+
     headerless_resolved = await resolve_threads_share_via_headerless_fetch(candidate)
     if headerless_resolved:
         return headerless_resolved
@@ -1254,13 +1261,6 @@ async def resolve_threads_url(
                 resolved_proxy,
             )
             return resolved_proxy
-
-    extension_resolved = await asyncio.to_thread(
-        _resolve_threads_share_with_extension_fetch_sync,
-        candidate,
-    )
-    if extension_resolved:
-        return extension_resolved
 
     chromium_resolved = await asyncio.to_thread(
         _resolve_threads_share_with_chromium_sync,
