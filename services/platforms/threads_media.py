@@ -971,6 +971,254 @@ async def resolve_threads_share_via_crawlers(url: str) -> str | None:
     return None
 
 
+def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
+    """Resolve /share/<id>/ by running fetch() inside real Chromium.
+
+    Threads' share redirect currently depends on browser request semantics.
+    Server-side aiohttp requests and normal document navigation can receive the
+    generic SPA shell, so execute the same credentials=omit, redirect=follow
+    fetch inside Chromium and read response.url through the DevTools protocol.
+    """
+    try:
+        from websockets.sync.client import connect as ws_connect
+    except Exception as exc:
+        logging.warning("Threads CDP resolver unavailable: websocket client error=%s", exc)
+        return None
+
+    binary = (
+        shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+    )
+    if not binary:
+        logging.warning("Threads CDP resolver unavailable: browser binary not found")
+        return None
+
+    variants = (
+        ("share_origin", url, False),
+        ("blank_relaxed", "about:blank", True),
+    )
+    for mode, bootstrap_url, relax_cors in variants:
+        profile_dir = tempfile.mkdtemp(prefix=f"threads-cdp-{mode}-")
+        process: subprocess.Popen | None = None
+        try:
+            command = [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--lang=en-US",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=0",
+                "--remote-allow-origins=*",
+                f"--user-data-dir={profile_dir}",
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            ]
+            if relax_cors:
+                command.extend(
+                    [
+                        "--disable-web-security",
+                        "--disable-features=IsolateOrigins,site-per-process",
+                    ]
+                )
+            command.append(bootstrap_url)
+
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+            port_file = os.path.join(profile_dir, "DevToolsActivePort")
+            port: int | None = None
+            startup_deadline = time.monotonic() + 7.0
+            while time.monotonic() < startup_deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with open(port_file, "r", encoding="utf-8") as handle:
+                        first_line = handle.readline().strip()
+                    if first_line.isdigit():
+                        port = int(first_line)
+                        break
+                except (FileNotFoundError, OSError):
+                    pass
+                time.sleep(0.1)
+
+            if not port:
+                logging.warning(
+                    "Threads CDP resolver could not open DevTools: mode=%s rc=%s",
+                    mode,
+                    process.poll(),
+                )
+                continue
+
+            target = None
+            target_deadline = time.monotonic() + 6.0
+            endpoint = f"http://127.0.0.1:{port}/json"
+            while time.monotonic() < target_deadline:
+                try:
+                    with urllib.request.urlopen(endpoint, timeout=1.0) as response:
+                        targets = json.loads(
+                            response.read().decode("utf-8", errors="replace")
+                        )
+                    if isinstance(targets, list):
+                        pages = [
+                            item
+                            for item in targets
+                            if isinstance(item, dict)
+                            and item.get("type") == "page"
+                            and item.get("webSocketDebuggerUrl")
+                        ]
+                        if pages:
+                            target = pages[0]
+                            current_url = str(target.get("url") or "")
+                            if (
+                                mode != "share_origin"
+                                or "threads.com" in current_url
+                                or "threads.net" in current_url
+                            ):
+                                break
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+            if not target:
+                logging.warning("Threads CDP resolver found no page target: mode=%s", mode)
+                continue
+
+            ws_url = str(target.get("webSocketDebuggerUrl") or "")
+            if not ws_url:
+                continue
+
+            expression = f"""
+(async () => {{
+  try {{
+    const response = await fetch({json.dumps(url)}, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
+    }});
+    return JSON.stringify({{
+      ok: true,
+      url: response.url,
+      status: response.status,
+      type: response.type
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: String(error && error.message || error || "fetch_failed")
+    }});
+  }}
+}})()
+"""
+
+            with ws_connect(
+                ws_url,
+                open_timeout=4,
+                close_timeout=1,
+            ) as websocket:
+                request_id = 17
+                websocket.send(
+                    json.dumps(
+                        {
+                            "id": request_id,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": expression,
+                                "awaitPromise": True,
+                                "returnByValue": True,
+                            },
+                        }
+                    )
+                )
+                response_payload = None
+                response_deadline = time.monotonic() + 15.0
+                while time.monotonic() < response_deadline:
+                    try:
+                        raw = websocket.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    payload = json.loads(raw)
+                    if payload.get("id") == request_id:
+                        response_payload = payload
+                        break
+
+            if not isinstance(response_payload, dict):
+                logging.warning("Threads CDP fetch timed out: mode=%s", mode)
+                continue
+            if response_payload.get("error"):
+                logging.warning(
+                    "Threads CDP command failed: mode=%s error=%s",
+                    mode,
+                    str(response_payload.get("error"))[:300],
+                )
+                continue
+
+            remote = (
+                response_payload.get("result", {})
+                .get("result", {})
+                .get("value")
+            )
+            try:
+                fetch_result = json.loads(remote) if isinstance(remote, str) else {}
+            except json.JSONDecodeError:
+                fetch_result = {}
+
+            final_url = str(fetch_result.get("url") or "").strip()
+            resolved = strip_threads_url(final_url)
+            if extract_threads_post_code(resolved):
+                logging.info(
+                    "Resolved Threads share URL via Chromium CDP fetch: "
+                    "mode=%s status=%s %s -> %s",
+                    mode,
+                    fetch_result.get("status"),
+                    url,
+                    resolved,
+                )
+                return resolved
+
+            logging.warning(
+                "Threads CDP fetch did not resolve canonical post: "
+                "mode=%s status=%s type=%s final=%s error=%s",
+                mode,
+                fetch_result.get("status"),
+                fetch_result.get("type"),
+                final_url[:300] or "-",
+                str(fetch_result.get("error") or "-")[:200],
+            )
+        except Exception as exc:
+            logging.warning(
+                "Threads CDP resolver failed: mode=%s error=%s",
+                mode,
+                exc,
+            )
+        finally:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=2)
+                except Exception:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+    return None
+
+
 def _resolve_threads_share_with_extension_fetch_sync(url: str) -> str | None:
     """Resolve a Threads /share/ URL using Chromium's extension fetch path.
 
@@ -1376,13 +1624,16 @@ async def resolve_threads_url(
     if oembed_resolved:
         return oembed_resolved
 
-    extension_resolved = await asyncio.to_thread(
-        _resolve_threads_share_with_extension_fetch_sync,
+    cdp_resolved = await asyncio.to_thread(
+        _resolve_threads_share_via_cdp_fetch_sync,
         candidate,
     )
-    if extension_resolved:
-        return extension_resolved
+    if cdp_resolved:
+        return cdp_resolved
 
+    # The old temporary extension service-worker probe is intentionally skipped
+    # here: Chromium headless doesn't wake that MV3 worker reliably. Keep the
+    # lightweight HTTP request-shape fallback below for diagnostics.
     extension_resolved = await resolve_threads_share_via_extension_fetch(candidate)
     if extension_resolved:
         return extension_resolved
