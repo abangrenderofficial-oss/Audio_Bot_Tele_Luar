@@ -152,6 +152,88 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return final_url, page
 
 
+async def resolve_threads_share_via_oembed(url: str) -> str | None:
+    """Ask Meta's official tokenless Threads oEmbed endpoint for the permalink.
+
+    Public Threads oEmbed is an official server-side surface. Although the
+    documented input is a permanent post URL, Meta may normalize share wrappers
+    internally; when it does, the returned embed HTML contains the canonical
+    data-text-post-permalink URL.
+    """
+    session = await get_http_session()
+    endpoints = (
+        "https://graph.threads.com/oembed",
+        "https://graph.threads.net/v1.0/oembed",
+    )
+    for endpoint in endpoints:
+        try:
+            async with session.get(
+                endpoint,
+                params={"url": url, "omitscript": "true"},
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "AbangRender-MusicBot/1.0",
+                },
+                allow_redirects=True,
+                timeout=12,
+            ) as response:
+                raw = await response.text(errors="replace")
+                status = response.status
+        except Exception as exc:
+            logging.info(
+                "Threads oEmbed resolver request failed: endpoint=%s error=%s",
+                endpoint,
+                exc,
+            )
+            continue
+
+        if status != 200:
+            logging.info(
+                "Threads oEmbed resolver miss: endpoint=%s status=%s body=%s",
+                endpoint,
+                status,
+                re.sub(r"\s+", " ", raw)[:220],
+            )
+            continue
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+
+        if isinstance(payload, dict):
+            candidates = [
+                str(payload.get("url") or ""),
+                str(payload.get("permalink") or ""),
+                str(payload.get("html") or ""),
+            ]
+            for candidate in candidates:
+                resolved = _extract_threads_post_url_from_html(candidate)
+                if resolved:
+                    logging.info(
+                        "Resolved Threads share URL via official oEmbed: %s -> %s",
+                        url,
+                        resolved,
+                    )
+                    return resolved
+
+        resolved = _extract_threads_post_url_from_html(raw)
+        if resolved:
+            logging.info(
+                "Resolved Threads share URL via official oEmbed body: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+        logging.info(
+            "Threads oEmbed resolver returned no permalink: endpoint=%s bytes=%s",
+            endpoint,
+            len(raw),
+        )
+    return None
+
+
 async def resolve_threads_share_via_extension_fetch(url: str) -> str | None:
     """Mirror a real Chrome extension fetch as closely as possible.
 
@@ -1289,6 +1371,10 @@ async def resolve_threads_url(
 
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
+
+    oembed_resolved = await resolve_threads_share_via_oembed(candidate)
+    if oembed_resolved:
+        return oembed_resolved
 
     extension_resolved = await asyncio.to_thread(
         _resolve_threads_share_with_extension_fetch_sync,
