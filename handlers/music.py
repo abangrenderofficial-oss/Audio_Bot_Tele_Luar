@@ -447,6 +447,47 @@ async def process_music_link(
             # Group auto-conversion is opt-in. /connectmusic activates it.
             return
         group_music_connected = True
+        cleanup_recorder = getattr(db, "add_music_group_cleanup_message", None)
+        if callable(cleanup_recorder):
+            try:
+                await cleanup_recorder(
+                    group_id=message.chat.id,
+                    message_id=message.message_id,
+                    kind="source",
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Group source cleanup tracking failed: group=%s message=%s error=%s",
+                    message.chat.id,
+                    message.message_id,
+                    exc,
+                )
+
+    async def _remember_group_text(sent_message: object) -> None:
+        if not group_music_connected or sent_message is None:
+            return
+        recorder = getattr(db, "add_music_group_cleanup_message", None)
+        message_id = getattr(sent_message, "message_id", None)
+        if not callable(recorder) or message_id is None:
+            return
+        try:
+            await recorder(
+                group_id=message.chat.id,
+                message_id=int(message_id),
+                kind="bot_text",
+            )
+        except Exception as exc:
+            logging.warning(
+                "Group bot-text cleanup tracking failed: group=%s message=%s error=%s",
+                message.chat.id,
+                message_id,
+                exc,
+            )
+
+    async def _reply_group_text(*args, **kwargs):
+        sent = await message.reply(*args, **kwargs)
+        await _remember_group_text(sent)
+        return sent
 
     async def _remember_group_audio(
         *,
@@ -511,7 +552,7 @@ async def process_music_link(
     )
 
     if service_name in MUSIC_BLOCKED_SERVICES:
-        await message.reply(bm.music_unsupported_link(), parse_mode="HTML")
+        await _reply_group_text(bm.music_unsupported_link(), parse_mode="HTML")
         await update_info(message)
         return
     if service_name not in MUSIC_LINK_SERVICES:
@@ -1363,21 +1404,21 @@ async def process_music_link(
             message.from_user.id if message.from_user else None,
             exc.retry_after,
         )
-        await message.reply(build_rate_limit_text(exc.retry_after))
+        await _reply_group_text(build_rate_limit_text(exc.retry_after))
     except QueueBackpressureError as exc:
         logging.info(
             "Music Bot queue busy: user_id=%s position=%s",
             message.from_user.id if message.from_user else None,
             exc.position,
         )
-        await message.reply(build_queue_busy_text(exc.position))
+        await _reply_group_text(build_queue_busy_text(exc.position))
     except asyncio.TimeoutError:
         logging.warning(
             "Music metadata timed out: service=%s url=%s",
             service_name,
             summarize_url_for_log(source_url),
         )
-        await message.reply(bm.timeout_error())
+        await _reply_group_text(bm.timeout_error())
     except MusicDownloadError as exc:
         logging.error(
             "Music conversion failed: service=%s url=%s error=%s",
@@ -1385,7 +1426,7 @@ async def process_music_link(
             summarize_url_for_log(source_url),
             exc,
         )
-        await message.reply(_friendly_music_error(exc))
+        await _reply_group_text(_friendly_music_error(exc))
     except Exception as exc:
         logging.exception(
             "Unexpected Music Bot failure: service=%s url=%s error=%s",
@@ -1393,7 +1434,7 @@ async def process_music_link(
             summarize_url_for_log(source_url),
             exc,
         )
-        await message.reply(_friendly_music_error(exc))
+        await _reply_group_text(_friendly_music_error(exc))
     finally:
         await safe_delete_message(status_message)
         await cleanup_music_result(result)
