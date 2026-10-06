@@ -1025,6 +1025,7 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
                 "name": "Threads Share Resolver",
                 "version": "1.0",
                 "key": extension_key,
+                "background": {"service_worker": "background.js"},
                 "host_permissions": [
                     "https://*.threads.com/*",
                     "https://*.threads.net/*",
@@ -1043,6 +1044,40 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
                 encoding="utf-8",
             ) as handle:
                 handle.write("<!doctype html><meta charset=\"utf-8\"><title>resolver</title>")
+
+            background_script = """
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.type !== "resolveThreadsShare") return false;
+  (async () => {
+    try {
+      const response = await fetch(String(message.url || ""), {
+        method: "GET",
+        credentials: "omit",
+        redirect: "follow",
+        headers: { "Accept-Language": "en" }
+      });
+      sendResponse({
+        ok: true,
+        url: response.url,
+        status: response.status,
+        type: response.type
+      });
+    } catch (error) {
+      sendResponse({
+        ok: false,
+        error: String(error && error.message || error || "fetch_failed")
+      });
+    }
+  })();
+  return true;
+});
+"""
+            with open(
+                os.path.join(extension_dir, "background.js"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(background_script)
 
             resolver_url = f"chrome-extension://{extension_id}/resolver.html"
             command = [
@@ -1138,22 +1173,15 @@ def _resolve_threads_share_via_real_extension_page_sync(url: str) -> str | None:
             expression = f"""
 (async () => {{
   try {{
-    const response = await fetch({json.dumps(url)}, {{
-      method: "GET",
-      credentials: "omit",
-      redirect: "follow",
-      headers: {{ "Accept-Language": "en" }}
+    const result = await chrome.runtime.sendMessage({{
+      type: "resolveThreadsShare",
+      url: {json.dumps(url)}
     }});
-    return JSON.stringify({{
-      ok: true,
-      url: response.url,
-      status: response.status,
-      type: response.type
-    }});
+    return JSON.stringify(result || {{ok: false, error: "empty_extension_response"}});
   }} catch (error) {{
     return JSON.stringify({{
       ok: false,
-      error: String(error && error.message || error || "fetch_failed")
+      error: String(error && error.message || error || "message_failed")
     }});
   }}
 }})()
