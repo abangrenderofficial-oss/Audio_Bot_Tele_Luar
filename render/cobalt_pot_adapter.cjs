@@ -1240,6 +1240,52 @@ async function resolveThreadsShareViaTelegramBot(mediaUrl) {
   return mediaUrl;
 }
 
+async function resolveThreadsShareViaEdgeResolver(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+
+  const endpoint = "https://resolver.mythic3011.com/v1/threads/resolve";
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "origin": "https://share-tools.mythic3011.com",
+        "user-agent": "AbangRender-MusicBot/1.0",
+      },
+      body: JSON.stringify({ url: mediaUrl }),
+      signal: AbortSignal.timeout(12000),
+    });
+    const raw = await response.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch {}
+
+    const candidate = String(data?.canonicalUrl || "").trim();
+    const match = candidate.match(
+      /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i
+    );
+    if (response.ok && data?.ok && match) {
+      console.log(
+        "[SOCIAL-WORKER] threads edge resolver success -> " + match[0] +
+        " resolution=" + String(data?.resolution || "-")
+      );
+      return match[0];
+    }
+
+    console.warn(
+      "[SOCIAL-WORKER] threads edge resolver miss status=" + response.status +
+      " body=" + raw.slice(0, 500)
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads edge resolver failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+
+  return mediaUrl;
+}
+
 async function resolveThreadsShareViaPlainClient(mediaUrl) {
   if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
 
@@ -2325,7 +2371,10 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     if (source === "threads") {
       const shareAlias = isThreadsShareAlias(mediaUrl);
       if (shareAlias) {
-        effectiveMediaUrl = await resolveThreadsShareViaPlainClient(mediaUrl);
+        effectiveMediaUrl = await resolveThreadsShareViaEdgeResolver(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaPlainClient(mediaUrl);
+        }
         if (effectiveMediaUrl === mediaUrl) {
           effectiveMediaUrl = await resolveThreadsShareViaCrawler(mediaUrl);
         }
