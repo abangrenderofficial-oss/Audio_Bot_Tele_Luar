@@ -4163,6 +4163,8 @@ async function sendWorkerAudioUrlToTelegram({
   performer,
   duration,
   businessConnectionId,
+  captionTitleOnly = false,
+  qualityLabel = "Original Quality",
 }) {
   if (!(await validateTelegramBotToken(botToken))) {
     throw new Error("invalid Telegram bot token");
@@ -4183,7 +4185,9 @@ async function sendWorkerAudioUrlToTelegram({
   }
   form.append(
     "caption",
-    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\n${escapeHtml(qualityLabel)}`
+    captionTitleOnly
+      ? `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}`
+      : `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\n${escapeHtml(qualityLabel)}`
   );
   form.append("parse_mode", "HTML");
   if (businessConnectionId) {
@@ -4232,6 +4236,7 @@ async function sendWorkerAudioToTelegram({
   duration,
   businessConnectionId,
   qualityLabel = "Original Quality",
+  captionTitleOnly = false,
 }) {
   if (!(await validateTelegramBotToken(botToken))) {
     throw new Error("invalid Telegram bot token");
@@ -4265,7 +4270,9 @@ async function sendWorkerAudioToTelegram({
   }
   form.append(
     "caption",
-    `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\nOriginal Quality`
+    captionTitleOnly
+      ? `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}`
+      : `🎵 ${escapeHtml(telegramText(title, "Audio", 200))}\n${escapeHtml(qualityLabel)}`
   );
   form.append("parse_mode", "HTML");
   if (businessConnectionId) {
@@ -4503,6 +4510,7 @@ const server = http.createServer(async (request, response) => {
             performer: body?.performer,
             duration: body?.duration,
             businessConnectionId: body?.business_connection_id,
+            captionTitleOnly: Boolean(body?.caption_title_only),
           });
           console.log("[YOUTUBE-WORKER] direct URL Telegram path succeeded");
         } catch (urlError) {
@@ -4541,6 +4549,7 @@ const server = http.createServer(async (request, response) => {
           performer: resolvedPerformer,
           duration: resolvedDuration,
           businessConnectionId: body?.business_connection_id,
+          captionTitleOnly: Boolean(body?.caption_title_only),
         });
       }
 
