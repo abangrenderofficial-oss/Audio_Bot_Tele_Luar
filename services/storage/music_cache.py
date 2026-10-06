@@ -40,7 +40,7 @@ def youtube_video_id(url: str) -> str | None:
 def social_media_key(source: str, url: str) -> str | None:
     source = str(source or "").strip().lower()
     raw = str(url or "").strip()
-    if source not in {"tiktok", "instagram", "threads", "twitter"} or not raw:
+    if source not in {"tiktok", "instagram", "threads", "twitter", "spotify"} or not raw:
         return None
 
     try:
@@ -83,6 +83,12 @@ def social_media_key(source: str, url: str) -> str | None:
                 if re.fullmatch(r"\d{8,32}", value):
                     candidate = f"status:{value}"
                     break
+
+    elif source == "spotify":
+        if len(parts) >= 2 and parts[-2] == "track":
+            track_id = parts[-1]
+            if re.fullmatch(r"[A-Za-z0-9]{8,64}", track_id):
+                candidate = f"track:{track_id}"
 
     if candidate:
         return candidate
