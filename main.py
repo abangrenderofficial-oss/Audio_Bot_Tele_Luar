@@ -363,7 +363,12 @@ async def send_analytics(user_id, chat_type, action_name):
 
 
 async def _run_social_music_selftest_from_env() -> None:
-    enabled = True  # TEMP: one deployment to validate the reported Threads share URL end-to-end
+    enabled = (
+        os.getenv("SOCIAL_MUSIC_SELFTEST", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
     if not enabled:
         return
 
