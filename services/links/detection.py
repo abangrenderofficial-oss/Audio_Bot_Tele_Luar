@@ -78,6 +78,20 @@ def canonicalize_supported_url(service: str, url: str) -> str:
     elif service in {"soundcloud", "spotify"}:
         # Audio links keep meaningful path IDs/slugs; tracking lives in query/fragment.
         query = ""
+    elif service == "twitter":
+        # X share links often append presentation-only suffixes such as
+        # /video/1 plus tracking query params. The audio worker only needs
+        # the canonical tweet URL, so normalize back to .../status/<id>.
+        parts = [part for part in path.split("/") if part]
+        for index, part in enumerate(parts[:-1]):
+            if (
+                part in {"status", "statuses"}
+                and index + 1 < len(parts)
+                and re.fullmatch(r"\d{1,24}", parts[index + 1])
+            ):
+                path = "/" + "/".join(parts[: index + 2])
+                break
+        query = ""
     else:
         query = ""
 
