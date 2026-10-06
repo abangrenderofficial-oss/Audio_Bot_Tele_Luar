@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Iterator
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from services.logger import logger as logging
 from services.platforms import CobaltMediaService
@@ -1189,6 +1189,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 continue
 
             endpoint = f"http://127.0.0.1:{port}/json"
+
+            # Startup navigation can race unpacked-extension registration.
+            # Re-open the page only after DevTools is ready.
+            try:
+                create_url = (
+                    f"http://127.0.0.1:{port}/json/new?"
+                    f"{quote(resolver_url, safe='')}"
+                )
+                request = urllib.request.Request(create_url, method="PUT")
+                with urllib.request.urlopen(request, timeout=2.0) as response:
+                    created = json.loads(
+                        response.read().decode("utf-8", errors="replace")
+                    )
+                logging.info(
+                    "Threads real-extension DevTools target created: mode=%s url=%s",
+                    mode,
+                    str(created.get("url") or "-")[:220]
+                    if isinstance(created, dict)
+                    else "-",
+                )
+            except Exception as exc:
+                logging.info(
+                    "Threads real-extension DevTools target create miss: "
+                    "mode=%s error=%s",
+                    mode,
+                    exc,
+                )
+            time.sleep(0.5)
+
             target: dict[str, object] | None = None
             target_deadline = time.monotonic() + 6.0
             while time.monotonic() < target_deadline:
@@ -1225,16 +1254,67 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             ws_url = str(target.get("webSocketDebuggerUrl") or "")
             expression = f"""
 (async () => {{
+  const target = {json.dumps(url)};
+  const diag = {{
+    href: location.href,
+    chromeType: typeof chrome,
+    runtimeType: (
+      typeof chrome !== "undefined"
+        ? typeof chrome.runtime
+        : "undefined"
+    )
+  }};
+
   try {{
-    const result = await chrome.runtime.sendMessage({{
-      type: "resolveThreadsShare",
-      url: {json.dumps(url)}
+    const response = await fetch(target, {{
+      method: "GET",
+      credentials: "omit",
+      redirect: "follow",
+      headers: {{ "Accept-Language": "en" }}
     }});
-    return JSON.stringify(result || {{ok: false, error: "empty_extension_response"}});
-  }} catch (error) {{
+    return JSON.stringify({{
+      ok: true,
+      url: response.url,
+      status: response.status,
+      type: response.type,
+      via: "extension_page_fetch",
+      diag
+    }});
+  }} catch (directError) {{
+    if (
+      typeof chrome !== "undefined" &&
+      chrome.runtime &&
+      typeof chrome.runtime.sendMessage === "function"
+    ) {{
+      try {{
+        const result = await chrome.runtime.sendMessage({{
+          type: "resolveThreadsShare",
+          url: target
+        }});
+        return JSON.stringify({{
+          ...(result || {{ok: false, error: "empty_extension_response"}}),
+          via: "extension_service_worker",
+          diag
+        }});
+      }} catch (messageError) {{
+        return JSON.stringify({{
+          ok: false,
+          error:
+            "page_fetch=" +
+            String(directError && directError.message || directError) +
+            "; runtime_message=" +
+            String(messageError && messageError.message || messageError),
+          via: "extension_page_then_worker",
+          diag
+        }});
+      }}
+    }}
+
     return JSON.stringify({{
       ok: false,
-      error: String(error && error.message || error || "message_failed")
+      error: String(directError && directError.message || directError || "fetch_failed"),
+      via: "extension_page_fetch",
+      diag
     }});
   }}
 }})()
