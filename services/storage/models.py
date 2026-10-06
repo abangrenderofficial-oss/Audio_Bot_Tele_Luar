@@ -37,6 +37,8 @@ APP_SCHEMA_TABLES = frozenset(
         "settings",
         "groups",
         "group_members",
+        "music_group_settings",
+        "music_group_tracks",
         "download_history",
     }
 )
@@ -117,6 +119,60 @@ class GroupMember(Base):
     group_id = Column(BigInteger, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
     user_id = Column(BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
     last_seen_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MusicGroupSettings(Base):
+    __tablename__ = "music_group_settings"
+
+    group_id = Column(
+        BigInteger,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        autoincrement=False,
+    )
+    connected = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=sa.text("true"),
+    )
+    connected_by_user_id = Column(BigInteger, nullable=True)
+    connected_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class MusicGroupTrack(Base):
+    __tablename__ = "music_group_tracks"
+    __table_args__ = (
+        Index("ix_music_group_tracks_group_created", "group_id", "created_at"),
+        Index("ix_music_group_tracks_group_source_message", "group_id", "source_message_id"),
+        UniqueConstraint(
+            "group_id",
+            "audio_message_id",
+            name="uq_music_group_tracks_group_audio_message",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    group_id = Column(
+        BigInteger,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    added_by_user_id = Column(BigInteger, nullable=True)
+    service = Column(Text, nullable=False)
+    source_url = Column(Text, nullable=False)
+    title = Column(Text, nullable=True)
+    performer = Column(Text, nullable=True)
+    telegram_file_id = Column(Text, nullable=False)
+    duration_seconds = Column(sa.Float, nullable=True)
+    source_message_id = Column(BigInteger, nullable=True)
+    audio_message_id = Column(BigInteger, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
 class AnalyticsEvent(Base):
