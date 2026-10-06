@@ -72,6 +72,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gzip \
       chromium \
       xvfb \
+      xauth \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system appgroup \
     && adduser --system --ingroup appgroup --home /app appuser \
