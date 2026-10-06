@@ -124,6 +124,65 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return str(response.url), await response.text()
 
 
+async def fetch_fxthreads_canonical(share_id: str) -> str | None:
+    """Fallback resolver for Threads /share/ links when Meta returns the login shell.
+
+    FxThreads resolves the short link in a real browser and returns the canonical
+    public post URL. This is used only after direct Threads resolution fails.
+    """
+    share_id = (share_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", share_id):
+        return None
+
+    session = await get_http_session()
+    url = f"https://fx.akitsuki.me/api/share/{share_id}"
+    try:
+        async with session.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "AbangRender-MusicBot/1.0",
+            },
+            allow_redirects=True,
+            timeout=20,
+        ) as response:
+            if response.status != 200:
+                logging.warning(
+                    "FxThreads share resolver returned HTTP %s for share=%s",
+                    response.status,
+                    share_id,
+                )
+                return None
+            payload = await response.json(content_type=None)
+    except Exception as exc:
+        logging.warning(
+            "FxThreads share resolver failed: share=%s error=%s",
+            share_id,
+            exc,
+        )
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    resolved = strip_threads_url(str(payload.get("url") or ""))
+    if extract_threads_post_code(resolved):
+        return resolved
+
+    post_id = str(payload.get("id") or "").strip()
+    author = payload.get("author")
+    username = (
+        str(author.get("username") or "").strip()
+        if isinstance(author, dict)
+        else ""
+    )
+    if re.fullmatch(r"[A-Za-z0-9_-]+", post_id) and re.fullmatch(
+        r"[A-Za-z0-9._-]+", username
+    ):
+        return f"https://www.threads.com/@{username}/post/{post_id}"
+    return None
+
+
 async def resolve_threads_url(
     url: str,
     *,
@@ -154,6 +213,20 @@ async def resolve_threads_url(
     if resolved_page:
         logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
         return resolved_page
+
+    share_match = THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate))
+    share_id = ""
+    if share_match:
+        share_id = _threads_path_only(candidate).rstrip("/").split("/")[-1]
+    if share_id:
+        resolved_proxy = await fetch_fxthreads_canonical(share_id)
+        if resolved_proxy:
+            logging.info(
+                "Resolved Threads share URL via FxThreads fallback: %s -> %s",
+                candidate,
+                resolved_proxy,
+            )
+            return resolved_proxy
 
     title_match = re.search(r"<title[^>]*>(.*?)</title>", page or "", re.IGNORECASE | re.DOTALL)
     canonical_match = re.search(
