@@ -167,7 +167,7 @@ def _social_audio_caption(
     quality_label: str,
 ) -> str:
     escaped_title = html.escape(title)
-    if service_name in {"threads", "twitter"}:
+    if service_name in {"threads", "twitter", "tiktok"}:
         return f"🎵 {escaped_title}"
     return f"🎵 {escaped_title}\n{html.escape(quality_label)}"
 
@@ -180,7 +180,7 @@ async def _enforce_worker_title_only_caption(
     title: str,
     business_connection_id: str | None,
 ) -> None:
-    if service_name not in {"threads", "twitter"} or message_id is None:
+    if service_name not in {"threads", "twitter", "tiktok"} or message_id is None:
         return
 
     kwargs = {
