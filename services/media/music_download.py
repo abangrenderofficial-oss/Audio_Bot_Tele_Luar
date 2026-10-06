@@ -1482,14 +1482,22 @@ async def send_social_fast_to_telegram(
         raise MusicDownloadError(f"Unsupported social source: {source}")
 
     if source == "threads":
-        # Threads' mobile Share action now commonly produces /share/<id>/ URLs.
-        # yt-dlp expects the canonical /@user/post/<code> page, so resolve first.
-        from services.platforms.threads_media import resolve_threads_url
+        # The Render social worker has a dedicated ThreadsDL path which accepts
+        # mobile /share/<id>/ aliases directly. Do not waste time trying to
+        # canonicalize those aliases on the bot's datacenter IP first.
+        parsed_threads = urlparse(url)
+        is_share_alias = bool(
+            re.fullmatch(r"/share/[A-Za-z0-9_-]+/?", parsed_threads.path or "")
+        )
+        if is_share_alias:
+            logging.info("Threads share alias handed directly to Render social worker")
+        else:
+            from services.platforms.threads_media import resolve_threads_url
 
-        resolved_url = await resolve_threads_url(url)
-        if resolved_url != url:
-            logging.info("Threads Fast Audio canonical URL resolved")
-        url = resolved_url
+            resolved_url = await resolve_threads_url(url)
+            if resolved_url != url:
+                logging.info("Threads Fast Audio canonical URL resolved")
+            url = resolved_url
 
     base_url = _youtube_worker_base_url()
     api_key = _youtube_worker_auth_token()
