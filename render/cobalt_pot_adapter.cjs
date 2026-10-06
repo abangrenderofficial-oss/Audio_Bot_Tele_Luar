@@ -1613,6 +1613,153 @@ async function downloadThreadsHybridAsset(
   throw new Error(lastError);
 }
 
+
+function readHtmlMetaContent(html, key) {
+  const wanted = String(key || "").toLowerCase();
+  for (const match of String(html || "").matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = match[0];
+    const name = (
+      tag.match(/\b(?:property|name)=["']([^"']+)["']/i) || []
+    )[1];
+    if (!name || String(name).toLowerCase() !== wanted) continue;
+    const content = (tag.match(/\bcontent=["']([^"']*)["']/i) || [])[1];
+    if (content) return content;
+  }
+  return "";
+}
+
+function readHtmlCanonical(html) {
+  for (const match of String(html || "").matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+    const rel = (tag.match(/\brel=["']([^"']+)["']/i) || [])[1];
+    if (!rel || String(rel).toLowerCase() !== "canonical") continue;
+    const href = (tag.match(/\bhref=["']([^"']+)["']/i) || [])[1];
+    if (href) return href;
+  }
+  return "";
+}
+
+function cleanThreadsEmbedValue(value) {
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#0?64;/gi, "@")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/")
+    .trim();
+}
+
+async function fetchFxThreadsPage(mediaUrl) {
+  const original = new URL(mediaUrl);
+  const pageUrl = "https://fx.akitsuki.me" + original.pathname;
+  const response = await fetch(pageUrl, {
+    redirect: "follow",
+    headers: {
+      "user-agent": "Mozilla/5.0 (compatible; TelegramBot)",
+      "accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  const html = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      "FxThreads HTTP " + response.status + ": " + html.slice(0, 300)
+    );
+  }
+  return { pageUrl, html, finalUrl: response.url };
+}
+
+async function resolveThreadsShareViaFxThreads(mediaUrl) {
+  if (!isThreadsShareAlias(mediaUrl)) return mediaUrl;
+  try {
+    const page = await fetchFxThreadsPage(mediaUrl);
+    const candidate = cleanThreadsEmbedValue(
+      readHtmlMetaContent(page.html, "og:url") ||
+      readHtmlCanonical(page.html)
+    );
+    if (
+      /^https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^\s/?#]+\/post\/[A-Za-z0-9_-]+/i.test(candidate)
+    ) {
+      console.log(
+        "[SOCIAL-WORKER] threads FxThreads resolved share -> " + candidate
+      );
+      return candidate;
+    }
+    console.warn(
+      "[SOCIAL-WORKER] threads FxThreads resolver returned no canonical post"
+    );
+  } catch (error) {
+    console.warn(
+      "[SOCIAL-WORKER] threads FxThreads resolver failed:",
+      String(error?.message || error).slice(0, 500)
+    );
+  }
+  return mediaUrl;
+}
+
+async function fetchFxThreadsMedia(mediaUrl, prefix) {
+  const started = Date.now();
+  const page = await fetchFxThreadsPage(mediaUrl);
+  const candidates = [];
+  const seen = new Set();
+  const add = (value, kind, score) => {
+    const url = cleanThreadsEmbedValue(value);
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({ url, kind, score });
+  };
+
+  add(readHtmlMetaContent(page.html, "og:video:secure_url"), "video", 2200);
+  add(readHtmlMetaContent(page.html, "og:video"), "video", 2100);
+  add(readHtmlMetaContent(page.html, "twitter:player:stream"), "video", 2000);
+  add(readHtmlMetaContent(page.html, "og:audio:secure_url"), "audio", 1950);
+  add(readHtmlMetaContent(page.html, "og:audio"), "audio", 1900);
+
+  candidates.sort((a, b) => b.score - a.score);
+  if (!candidates.length) {
+    const canonical = cleanThreadsEmbedValue(
+      readHtmlMetaContent(page.html, "og:url") ||
+      readHtmlCanonical(page.html)
+    );
+    throw new Error(
+      "FxThreads returned no playable media" +
+      (canonical ? " canonical=" + canonical : "")
+    );
+  }
+
+  let lastError = "FxThreads media download failed";
+  for (const candidate of candidates.slice(0, 8)) {
+    try {
+      const downloaded = await downloadThreadsHybridAsset(
+        candidate,
+        prefix,
+        "",
+        { referer: page.pageUrl }
+      );
+      const title = cleanThreadsEmbedValue(
+        readHtmlMetaContent(page.html, "og:title")
+      );
+      console.log(
+        `[SOCIAL-WORKER] threads FxThreads ready kind=${candidate.kind} bytes=${downloaded.bytes} codec=${downloaded.codec} ms=${Date.now() - started}`
+      );
+      return {
+        filePath: downloaded.filePath,
+        metadata: {
+          title:
+            title ||
+            (candidate.kind === "audio" ? "Threads music" : "Threads audio"),
+          performer: "Threads",
+          duration: null,
+        },
+        mediaKind: candidate.kind,
+      };
+    } catch (error) {
+      lastError = String(error?.message || error).slice(0, 500);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
 async function fetchVxThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const original = new URL(mediaUrl);
@@ -2564,10 +2711,14 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       // waterfall. Try the preview UA once, then media providers directly.
       if (shareAlias) {
         effectiveMediaUrl = await resolveThreadsShareViaTelegramBot(mediaUrl);
+        if (effectiveMediaUrl === mediaUrl) {
+          effectiveMediaUrl = await resolveThreadsShareViaFxThreads(mediaUrl);
+        }
       }
 
       const providers = effectiveMediaUrl !== mediaUrl
         ? [
+            ["FxThreads", fetchFxThreadsMedia],
             ["vxThreads", fetchVxThreadsMedia],
             ["PostCopilot", fetchPostCopilotThreadsMedia],
             ["ThreadsDL", fetchThreadsDlMedia],
@@ -2575,12 +2726,14 @@ async function runSocialWorkerAudio(mediaUrl, source) {
           ]
         : shareAlias
           ? [
+              ["FxThreads", fetchFxThreadsMedia],
               ["vxThreads", fetchVxThreadsMedia],
               ["PostCopilot", fetchPostCopilotThreadsMedia],
               ["DLPanda", fetchDlpandaThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
             ]
           : [
+              ["FxThreads", fetchFxThreadsMedia],
               ["ThreadsDL", fetchThreadsDlMedia],
               ["vxThreads", fetchVxThreadsMedia],
               ["DLPanda", fetchDlpandaThreadsMedia],
