@@ -1499,6 +1499,7 @@ async def send_social_fast_to_telegram(
     base_url = _youtube_worker_base_url()
     api_key = _youtube_worker_auth_token()
     bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+    logging.info("Social fast worker endpoint=%s source=%s", base_url, source)
     if not base_url or not api_key or not bot_token:
         raise MusicDownloadError("Fast social Telegram worker is not configured")
 
