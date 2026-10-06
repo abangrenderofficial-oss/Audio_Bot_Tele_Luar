@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from services.logger import logger as logging
-from services.storage.models import MusicGroupSettings, MusicGroupTrack
+from services.storage.models import MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
 
 logging = logging.bind(service="db_group_music")
 
@@ -185,3 +185,60 @@ class MusicGroupRepositoryMixin:
                 )
             )
             return int(result.scalar() or 0)
+
+
+    async def add_music_group_cleanup_message(
+        self,
+        *,
+        group_id: int,
+        message_id: int,
+        kind: str,
+    ) -> None:
+        group_id = int(group_id)
+        message_id = int(message_id)
+        async with self.SessionLocal() as session:
+            async with session.begin():
+                existing = await session.execute(
+                    select(MusicGroupCleanupMessage.id).where(
+                        MusicGroupCleanupMessage.group_id == group_id,
+                        MusicGroupCleanupMessage.message_id == message_id,
+                    )
+                )
+                if existing.scalar_one_or_none() is not None:
+                    return
+                session.add(
+                    MusicGroupCleanupMessage(
+                        group_id=group_id,
+                        message_id=message_id,
+                        kind=str(kind or "bot_text"),
+                    )
+                )
+
+    async def get_music_group_cleanup_message_ids(
+        self,
+        group_id: int,
+    ) -> list[int]:
+        async with self.SessionLocal() as session:
+            result = await session.execute(
+                select(MusicGroupCleanupMessage.message_id)
+                .where(MusicGroupCleanupMessage.group_id == int(group_id))
+                .order_by(MusicGroupCleanupMessage.message_id.asc())
+            )
+            return [int(value) for value in result.scalars().all()]
+
+    async def remove_music_group_cleanup_messages(
+        self,
+        group_id: int,
+        message_ids: Sequence[int],
+    ) -> None:
+        ids = [int(value) for value in message_ids]
+        if not ids:
+            return
+        async with self.SessionLocal() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(MusicGroupCleanupMessage).where(
+                        MusicGroupCleanupMessage.group_id == int(group_id),
+                        MusicGroupCleanupMessage.message_id.in_(ids),
+                    )
+                )
