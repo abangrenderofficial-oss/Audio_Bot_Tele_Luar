@@ -191,6 +191,10 @@ def get_youtube_video(url):
     return youtube_media_service.get_youtube_video(url)
 
 
+def search_youtube_track_fast(query: str):
+    return youtube_media_service.search_youtube_track_fast(query)
+
+
 def search_youtube_track(query: str):
     return youtube_media_service.search_youtube_track(query)
 
