@@ -47,9 +47,9 @@ THREADS_PAGE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
 }
-# Important: /share/<id>/ behaves differently for crawler UAs. A normal browser
-# UA receives the redirect to /@user/post/<code>; Googlebot can stay on the
-# wrapper page, which is exactly why yt-dlp was reporting "No video post found".
+# Threads currently exposes /share/<id>/ redirects and SSR post data to a
+# crawler UA. Ordinary browser/server requests can receive only the SPA shell.
+# Keep the Googlebot request shape as the primary public resolver.
 THREADS_SHARE_HEADERS = {
     "Accept": THREADS_PAGE_HEADERS["Accept"],
     "Accept-Language": "en",
@@ -2361,16 +2361,45 @@ async def fetch_fxthreads_canonical(share_id: str) -> str | None:
 
 
 async def resolve_threads_share_fast(url: str) -> str:
-    """Fast resolver for Threads /share/<id>/ links.
+    """Resolve a Threads /share/<id>/ alias with the public crawler path first.
 
-    Run exactly one browser-network fetch in Chromium. Keep Chromium's native
-    User-Agent/client hints intact; Threads can return only the SPA shell when
-    the UA is manually overridden.
+    Threads' current server behavior exposes the canonical redirect/SSR payload
+    to Googlebot. This is the same request shape used by current working Threads
+    download clients. Browser-extension/CDP probes remain fallbacks only.
     """
     candidate = (url or "").strip()
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
 
+    # Primary path: one Googlebot GET, redirects followed. Check both
+    # response.url and the SSR HTML because Threads can expose either.
+    try:
+        final_url, page = await fetch_threads_share_page(candidate)
+        resolved = strip_threads_url(final_url)
+        if extract_threads_post_code(resolved):
+            logging.info(
+                "Resolved Threads share URL via Googlebot redirect: %s -> %s",
+                candidate,
+                resolved,
+            )
+            return resolved
+
+        resolved = _extract_threads_post_url_from_html(page)
+        if resolved:
+            logging.info(
+                "Resolved Threads share URL via Googlebot SSR: %s -> %s",
+                candidate,
+                resolved,
+            )
+            return resolved
+    except Exception as exc:
+        logging.info(
+            "Threads fast Googlebot resolver failed: url=%s error=%s",
+            candidate,
+            exc,
+        )
+
+    # Fallback: exact MV3 extension-worker fetch semantics.
     resolved = await asyncio.to_thread(
         _resolve_threads_share_via_extension_worker_sync,
         candidate,
@@ -2382,14 +2411,13 @@ async def resolve_threads_share_fast(url: str) -> str:
         )
     if resolved:
         logging.info(
-            "Resolved Threads share URL via fast Chromium fetch: %s -> %s",
+            "Resolved Threads share URL via Chromium fallback: %s -> %s",
             candidate,
             resolved,
         )
         return resolved
 
     return candidate
-
 
 async def resolve_threads_url(
     url: str,
