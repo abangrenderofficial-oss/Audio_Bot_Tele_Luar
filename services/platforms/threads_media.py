@@ -668,7 +668,7 @@ async def resolve_threads_share_via_railway(url: str) -> str | None:
                 "User-Agent": "AbangRender-MusicBot/1.0",
             },
             allow_redirects=False,
-            timeout=15,
+            timeout=45,
         ) as response:
             status = response.status
             try:
