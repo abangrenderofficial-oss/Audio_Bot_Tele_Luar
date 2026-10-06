@@ -2626,7 +2626,8 @@ async function fetchThreadsSsrMedia(mediaUrl, prefix) {
   let requestedCode = threadsPostCodeFromUrl(mediaUrl);
   let lastError = "Threads SSR returned no post media";
 
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
+  const maxAttempts = isThreadsShareAlias(mediaUrl) ? 1 : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await fetch(mediaUrl, {
         redirect: "follow",
