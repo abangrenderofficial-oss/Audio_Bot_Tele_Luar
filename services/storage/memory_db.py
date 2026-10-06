@@ -41,6 +41,8 @@ class MemoryDataBase:
         self._users: dict[int, SimpleNamespace] = {}
         self._groups: dict[int, SimpleNamespace] = {}
         self._history: list[SimpleNamespace] = []
+        self._music_groups: dict[int, dict[str, Any]] = {}
+        self._music_tracks: dict[int, list[SimpleNamespace]] = {}
 
     async def init_db(self) -> None:
         return None
@@ -160,6 +162,121 @@ class MemoryDataBase:
 
     async def get_active_groups(self) -> list[Any]:
         return [g for g in self._groups.values() if getattr(g, "status", "active") == "active"]
+
+    async def is_music_group_connected(self, group_id: int) -> bool:
+        state = self._music_groups.get(int(group_id))
+        return bool(state and state.get("connected"))
+
+    async def set_music_group_connected(
+        self,
+        group_id: int,
+        *,
+        connected: bool,
+        connected_by_user_id: int | None = None,
+    ) -> None:
+        gid = int(group_id)
+        state = self._music_groups.setdefault(gid, {})
+        state["connected"] = bool(connected)
+        if connected_by_user_id is not None:
+            state["connected_by_user_id"] = int(connected_by_user_id)
+
+    async def add_music_group_track(
+        self,
+        *,
+        group_id: int,
+        added_by_user_id: int | None,
+        service: str,
+        source_url: str,
+        title: str | None,
+        performer: str | None,
+        telegram_file_id: str,
+        duration_seconds: float | None,
+        source_message_id: int | None,
+        audio_message_id: int,
+    ) -> Any:
+        gid = int(group_id)
+        tracks = self._music_tracks.setdefault(gid, [])
+        audio_message_id = int(audio_message_id)
+        for track in tracks:
+            if int(track.audio_message_id) == audio_message_id:
+                return track
+
+        row = SimpleNamespace(
+            id=len(tracks) + 1,
+            group_id=gid,
+            added_by_user_id=(
+                int(added_by_user_id)
+                if added_by_user_id is not None
+                else None
+            ),
+            service=str(service or "unknown"),
+            source_url=str(source_url or ""),
+            title=title,
+            performer=performer,
+            telegram_file_id=str(telegram_file_id),
+            duration_seconds=duration_seconds,
+            source_message_id=(
+                int(source_message_id)
+                if source_message_id is not None
+                else None
+            ),
+            audio_message_id=audio_message_id,
+        )
+        tracks.append(row)
+        return row
+
+    async def list_music_group_tracks(
+        self,
+        group_id: int,
+        *,
+        limit: int | None = None,
+    ) -> list[Any]:
+        rows = list(self._music_tracks.get(int(group_id), []))
+        if limit is not None:
+            rows = rows[: max(1, int(limit))]
+        return rows
+
+    async def search_music_group_tracks(
+        self,
+        group_id: int,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> list[Any]:
+        needle = str(query or "").strip().casefold()
+        if not needle:
+            return []
+        rows = [
+            row
+            for row in self._music_tracks.get(int(group_id), [])
+            if needle in str(getattr(row, "title", "") or "").casefold()
+            or needle in str(getattr(row, "performer", "") or "").casefold()
+        ]
+        return rows[: max(1, min(int(limit), 25))]
+
+    async def get_music_group_source_message_ids(
+        self,
+        group_id: int,
+    ) -> list[int]:
+        values = {
+            int(row.source_message_id)
+            for row in self._music_tracks.get(int(group_id), [])
+            if getattr(row, "source_message_id", None) is not None
+        }
+        return sorted(values)
+
+    async def mark_music_group_links_cleared(
+        self,
+        group_id: int,
+        message_ids,
+    ) -> None:
+        ids = {int(value) for value in message_ids}
+        for row in self._music_tracks.get(int(group_id), []):
+            if getattr(row, "source_message_id", None) in ids:
+                row.source_message_id = None
+
+    async def get_music_group_track_count(self, group_id: int) -> int:
+        return len(self._music_tracks.get(int(group_id), []))
 
     async def record_download(
         self,
