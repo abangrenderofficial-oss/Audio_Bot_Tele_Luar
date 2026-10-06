@@ -133,8 +133,6 @@ async def connect_music_group(message: types.Message) -> None:
         return
     await _ensure_group_record(message)
     await _remember_command(message)
-    if not await _require_group_admin(message):
-        return
 
     await db.set_music_group_connected(
         message.chat.id,
