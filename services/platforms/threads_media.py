@@ -35,6 +35,18 @@ THREADS_PAGE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
 }
+# Important: /share/<id>/ behaves differently for crawler UAs. A normal browser
+# UA receives the redirect to /@user/post/<code>; Googlebot can stay on the
+# wrapper page, which is exactly why yt-dlp was reporting "No video post found".
+THREADS_SHARE_HEADERS = {
+    "Accept": THREADS_PAGE_HEADERS["Accept"],
+    "Accept-Language": "en",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/141.0.0.0 Safari/537.36"
+    ),
+}
 THREADS_MEDIA_HEADERS = {
     "Referer": "https://www.threads.com/",
     "User-Agent": THREADS_PAGE_HEADERS["User-Agent"],
@@ -105,7 +117,7 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
     session = await get_http_session()
     async with session.get(
         url,
-        headers=THREADS_PAGE_HEADERS,
+        headers=THREADS_SHARE_HEADERS,
         allow_redirects=True,
     ) as response:
         response.raise_for_status()
