@@ -809,8 +809,9 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
     """Resolve /share/<id>/ using Chromium's real browser navigation.
 
     The plain HTTP page can be only a login shell on server IPs. A real browser
-    still performs Threads' client-side navigation. Read the active tab URL
-    from Chrome DevTools instead of relying on page metadata.
+    can still perform Threads' client-side navigation. Use the main Render
+    service's direct network path here; only the separate Oregon worker runs
+    the WARP SOCKS proxy. Read the active tab URL from Chrome DevTools.
     """
     binary = (
         shutil.which("chromium")
@@ -836,7 +837,11 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
             "--disable-extensions",
             "--disable-sync",
             "--no-first-run",
-            "--proxy-server=socks5://127.0.0.1:1080",
+            "--incognito",
+            "--disable-blink-features=AutomationControlled",
+            # FxThreads resolves /share/ with a normal headless browser. Do not
+            # force the local WARP SOCKS port here: the main Render bot does not
+            # run wireproxy, so that made Chromium sit on the share URL forever.
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=0",
             f"--user-data-dir={profile_dir}",
