@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Iterator
 from urllib.parse import urlparse
@@ -19,6 +20,14 @@ logging = logging.bind(service="threads_media")
 
 THREADS_POST_URL_RE = re.compile(
     r"^https?://(?:www\.)?threads\.(?:com|net)/@(?P<username>[A-Za-z0-9._-]+)/post/(?P<code>[A-Za-z0-9_-]+)/*$",
+    re.IGNORECASE,
+)
+THREADS_SHARE_URL_RE = re.compile(
+    r"^https?://(?:www\.)?threads\.(?:com|net)/share/[A-Za-z0-9_-]+/*$",
+    re.IGNORECASE,
+)
+THREADS_POST_URL_SCAN_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:com|net)/@[A-Za-z0-9._-]+/post/[A-Za-z0-9_-]+",
     re.IGNORECASE,
 )
 THREADS_PAGE_HEADERS = {
@@ -50,6 +59,71 @@ def strip_threads_url(url: str) -> str:
 def extract_threads_post_code(url: str) -> str | None:
     match = THREADS_POST_URL_RE.fullmatch(strip_threads_url(url))
     return match.group("code") if match else None
+
+
+def _threads_path_only(url: str) -> str:
+    candidate = (url or "").strip()
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return candidate
+    return f"{parsed.scheme.lower() or 'https'}://{parsed.netloc.lower()}{parsed.path}"
+
+
+def _extract_threads_post_url_from_html(page: str) -> str | None:
+    # Threads share pages can expose the destination in og/canonical markup or
+    # inside JSON where slashes are escaped. Normalize both forms before scan.
+    normalized_page = unescape(page or "").replace("\\/", "/")
+    match = THREADS_POST_URL_SCAN_RE.search(normalized_page)
+    if not match:
+        return None
+    return strip_threads_url(match.group(0))
+
+
+async def fetch_threads_share_page(url: str) -> tuple[str, str]:
+    session = await get_http_session()
+    async with session.get(
+        url,
+        headers=THREADS_PAGE_HEADERS,
+        allow_redirects=True,
+    ) as response:
+        response.raise_for_status()
+        return str(response.url), await response.text()
+
+
+async def resolve_threads_url(
+    url: str,
+    *,
+    fetch_share_func: Callable[[str], Awaitable[tuple[str, str]]] | None = None,
+) -> str:
+    """Resolve Threads /share/... links to the canonical /@user/post/... URL."""
+    candidate = (url or "").strip()
+    canonical = strip_threads_url(candidate)
+    if extract_threads_post_code(canonical):
+        return canonical
+
+    if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
+        return candidate
+
+    fetcher = fetch_share_func or fetch_threads_share_page
+    try:
+        final_url, page = await fetcher(candidate)
+    except Exception as exc:
+        logging.warning("Threads share resolve request failed: url=%s error=%s", candidate, exc)
+        return candidate
+
+    resolved_final = strip_threads_url(final_url)
+    if extract_threads_post_code(resolved_final):
+        logging.info("Resolved Threads share URL via redirect: %s -> %s", candidate, resolved_final)
+        return resolved_final
+
+    resolved_page = _extract_threads_post_url_from_html(page)
+    if resolved_page:
+        logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
+        return resolved_page
+
+    logging.warning("Threads share URL did not expose a canonical post: url=%s", candidate)
+    return candidate
 
 
 @dataclass(slots=True)

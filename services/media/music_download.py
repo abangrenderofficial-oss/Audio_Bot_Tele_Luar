@@ -1481,6 +1481,16 @@ async def send_social_fast_to_telegram(
     if source not in {"tiktok", "instagram", "threads", "twitter"}:
         raise MusicDownloadError(f"Unsupported social source: {source}")
 
+    if source == "threads":
+        # Threads' mobile Share action now commonly produces /share/<id>/ URLs.
+        # yt-dlp expects the canonical /@user/post/<code> page, so resolve first.
+        from services.platforms.threads_media import resolve_threads_url
+
+        resolved_url = await resolve_threads_url(url)
+        if resolved_url != url:
+            logging.info("Threads Fast Audio canonical URL resolved")
+        url = resolved_url
+
     base_url = _youtube_worker_base_url()
     api_key = _youtube_worker_auth_token()
     bot_token = (os.getenv("BOT_TOKEN") or "").strip()

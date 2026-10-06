@@ -7,6 +7,7 @@ from services.platforms.threads_media import (
     ThreadsMediaService,
     extract_threads_post_code,
     parse_threads_post_html,
+    resolve_threads_url,
     strip_threads_url,
 )
 
@@ -23,6 +24,35 @@ def test_strip_threads_url_canonicalizes_domain_and_tracking():
     url = "https://threads.net/@author/post/Abc_123/?utm_source=share#fragment"
     assert strip_threads_url(url) == "https://www.threads.com/@author/post/Abc_123"
     assert extract_threads_post_code(url) == "Abc_123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_threads_share_url_from_redirect():
+    async def fetch_share(_url: str) -> tuple[str, str]:
+        return "https://www.threads.com/@author/post/Resolved_123?xmt=demo", ""
+
+    resolved = await resolve_threads_url(
+        "https://www.threads.com/share/BAV6glx_i6/",
+        fetch_share_func=fetch_share,
+    )
+
+    assert resolved == "https://www.threads.com/@author/post/Resolved_123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_threads_share_url_from_escaped_page_metadata():
+    async def fetch_share(_url: str) -> tuple[str, str]:
+        return (
+            "https://www.threads.com/share/BAV6glx_i6/",
+            r'{"canonical_url":"https:\/\/www.threads.com\/@author\/post\/Meta_456"}',
+        )
+
+    resolved = await resolve_threads_url(
+        "https://www.threads.com/share/BAV6glx_i6/",
+        fetch_share_func=fetch_share,
+    )
+
+    assert resolved == "https://www.threads.com/@author/post/Meta_456"
 
 
 def test_parse_threads_post_html_extracts_only_target_post_and_best_variants():
