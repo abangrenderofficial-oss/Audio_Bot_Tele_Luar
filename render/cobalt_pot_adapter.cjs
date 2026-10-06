@@ -4428,7 +4428,7 @@ const server = http.createServer(async (request, response) => {
         duration: metadata.duration,
         businessConnectionId: body?.business_connection_id,
         qualityLabel,
-        captionTitleOnly: source === "twitter",
+        captionTitleOnly: ["twitter", "soundcloud"].includes(source),
       });
 
       const payload = JSON.stringify({
