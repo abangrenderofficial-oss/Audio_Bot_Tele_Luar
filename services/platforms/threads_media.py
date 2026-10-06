@@ -1499,7 +1499,6 @@ def _resolve_threads_share_via_cdp_fetch_sync(url: str) -> str | None:
                 "--remote-debugging-port=0",
                 "--remote-allow-origins=*",
                 f"--user-data-dir={profile_dir}",
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
             ]
             if relax_cors:
                 command.extend(
@@ -2118,6 +2117,32 @@ async def fetch_fxthreads_canonical(share_id: str) -> str | None:
     ):
         return f"https://www.threads.com/@{username}/post/{post_id}"
     return None
+
+
+async def resolve_threads_share_fast(url: str) -> str:
+    """Fast resolver for Threads /share/<id>/ links.
+
+    Run exactly one browser-network fetch in Chromium. Keep Chromium's native
+    User-Agent/client hints intact; Threads can return only the SPA shell when
+    the UA is manually overridden.
+    """
+    candidate = (url or "").strip()
+    if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
+        return candidate
+
+    resolved = await asyncio.to_thread(
+        _resolve_threads_share_via_cdp_fetch_sync,
+        candidate,
+    )
+    if resolved:
+        logging.info(
+            "Resolved Threads share URL via fast Chromium fetch: %s -> %s",
+            candidate,
+            resolved,
+        )
+        return resolved
+
+    return candidate
 
 
 async def resolve_threads_url(
