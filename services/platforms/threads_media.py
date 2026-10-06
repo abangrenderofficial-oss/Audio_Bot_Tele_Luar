@@ -2054,6 +2054,15 @@ async def resolve_threads_url(
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
 
+    # The Render social worker has a dedicated Threads share path that can
+    # extract media without first converting Meta's opaque /share/<id>/ alias
+    # into a canonical /@user/post/<code> URL. Send the original share URL
+    # straight there; this avoids the slow resolver waterfall that Meta blocks
+    # on datacenter IPs.
+    if (os.getenv("THREADS_SHARE_WORKER_DIRECT", "1").strip().lower() in {"1", "true", "yes", "on"}):
+        logging.info("Threads share URL delegated directly to Render social worker: %s", candidate)
+        return candidate
+
     plain_redirect_resolved = await resolve_threads_share_via_manual_redirect(candidate)
     if plain_redirect_resolved:
         return plain_redirect_resolved
