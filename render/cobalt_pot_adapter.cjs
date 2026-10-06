@@ -1679,8 +1679,23 @@ async function probeDlpandaThreadsAssets(mediaUrl) {
       .filter((value, index, array) => array.indexOf(value) === index)
       .slice(0, 60);
 
+    const formNeedles = [
+      "data-download-form",
+      "data-parse-submit",
+      "download_type",
+      "name=\"url\"",
+      "data-download-url",
+    ];
+    const formSamples = formNeedles
+      .map((needle) => {
+        const index = html.indexOf(needle);
+        return index >= 0
+          ? needle + "::" + html.slice(Math.max(0, index - 1400), index + 2600).replace(/\\s+/g, " ")
+          : needle + "::-";
+      })
+      .join(" || ");
     console.log(
-      `[DLPANDA-DIAG] page status=${response.status} bytes=${html.length} scripts=${scriptSources.slice(0,20).join(" | ")} html_hints=${htmlHints.join(" | ").slice(0,6000)}`
+      `[DLPANDA-DIAG] page status=${response.status} bytes=${html.length} scripts=${scriptSources.slice(0,20).join(" | ")} html_hints=${htmlHints.join(" | ").slice(0,6000)} form_samples=${formSamples.slice(0,12000)}`
     );
 
     for (const scriptUrl of scriptSources.slice(0, 20)) {
@@ -1699,8 +1714,24 @@ async function probeDlpandaThreadsAssets(mediaUrl) {
           .map((match) => match[1])
           .filter((value, index, array) => array.indexOf(value) === index)
           .slice(0, 80);
+        const codeNeedles = [
+          "fetch(n.url",
+          "data-parse-submit",
+          "parse_attempt",
+          "download_type",
+          "new FormData",
+          "URLSearchParams",
+        ];
+        const codeSamples = codeNeedles
+          .map((needle) => {
+            const index = js.indexOf(needle);
+            return index >= 0
+              ? needle + "::" + js.slice(Math.max(0, index - 2200), index + 5200)
+              : needle + "::-";
+          })
+          .join(" || ");
         console.log(
-          `[DLPANDA-DIAG] asset=${scriptUrl} status=${jsResponse.status} bytes=${js.length} hints=${hints.join(" | ").slice(0,9000)}`
+          `[DLPANDA-DIAG] asset=${scriptUrl} status=${jsResponse.status} bytes=${js.length} hints=${hints.join(" | ").slice(0,9000)} code_samples=${codeSamples.slice(0,18000)}`
         );
       } catch (error) {
         console.log(
