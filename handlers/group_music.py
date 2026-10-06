@@ -142,7 +142,7 @@ async def connect_music_group(message: types.Message) -> None:
         connected_by_user_id=(message.from_user.id if message.from_user else None),
     )
     count = await db.get_music_group_track_count(message.chat.id)
-    await _reply_tracked(message, 
+    await _reply_tracked(message,
         "🎵 <b>Music Group connected.</b>\n\n"
         "Mulai sekarang ahli group boleh hantar link YouTube / TikTok / Instagram / "
         "Threads / X dan bot akan hantar audio terus dalam group.\n\n"
@@ -168,7 +168,7 @@ async def show_group_playlist(message: types.Message) -> None:
         )
     )
     if not tracks:
-        await _reply_tracked(message, 
+        await _reply_tracked(message,
             "🎵 Playlist group masih kosong. Hantar link lagu dulu dan bot akan kumpulkan."
         )
         return
@@ -360,12 +360,12 @@ async def play_all_group_music(message: types.Message) -> None:
 
     tracks = list(await db.list_music_group_tracks(message.chat.id))
     if not tracks:
-        await _reply_tracked(message, 
+        await _reply_tracked(message,
             "Playlist group masih kosong. Hantar link lagu dulu dan bot akan kumpulkan."
         )
         return
 
-    status = await _reply_tracked(message, 
+    status = await _reply_tracked(message,
         f"▶️ Susun playlist dari awal • {len(tracks)} track..."
     )
     sent_count = 0
@@ -440,7 +440,7 @@ async def search_music(message: types.Message, command: CommandObject) -> None:
 
     query = str(command.args or "").strip()
     if not query:
-        await _reply_tracked(message, 
+        await _reply_tracked(message,
             "🔎 Guna <code>/search tajuk lagu</code>\n"
             "Contoh: <code>/search Sinaran Sheila Majid</code>",
             parse_mode="HTML",
