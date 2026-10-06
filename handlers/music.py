@@ -165,6 +165,81 @@ async def redirect_music_inline_to_private(query: types.InlineQuery) -> None:
     if not detected:
         return
     service_name, source_url = detected
+
+    chat_type_value = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
+    is_group_music_chat = chat_type_value in {"group", "supergroup"}
+    group_music_connected = False
+    if is_group_music_chat:
+        checker = getattr(db, "is_music_group_connected", None)
+        if not callable(checker) or not await checker(message.chat.id):
+            # Group auto-conversion is opt-in. /connectmusic activates it for
+            # the destination group; private chat behavior is unchanged.
+            return
+        group_music_connected = True
+
+    async def _remember_group_audio(
+        *,
+        file_id: str | None,
+        audio_message_id: int | None,
+        title: object = None,
+        performer: object = None,
+        duration: object = None,
+    ) -> None:
+        if (
+            not group_music_connected
+            or not file_id
+            or audio_message_id is None
+        ):
+            return
+        try:
+            parsed_duration = (
+                float(duration)
+                if duration is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            parsed_duration = None
+        try:
+            await db.add_music_group_track(
+                group_id=message.chat.id,
+                added_by_user_id=(
+                    message.from_user.id if message.from_user else None
+                ),
+                service=service_name,
+                source_url=source_url,
+                title=(str(title) if title else None),
+                performer=(str(performer) if performer else None),
+                telegram_file_id=str(file_id),
+                duration_seconds=parsed_duration,
+                source_message_id=message.message_id,
+                audio_message_id=int(audio_message_id),
+            )
+        except Exception as exc:
+            logging.warning(
+                "Group playlist record failed: group=%s source=%s error=%s",
+                message.chat.id,
+                service_name,
+                exc,
+            )
+
+    async def _reply_audio_with_group_playlist(**kwargs):
+        sent = await message.reply_audio(**kwargs)
+        audio = getattr(sent, "audio", None)
+        await _remember_group_audio(
+            file_id=getattr(audio, "file_id", None),
+            audio_message_id=getattr(sent, "message_id", None),
+            title=kwargs.get("title") or getattr(audio, "file_name", None),
+            performer=kwargs.get("performer"),
+            duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+        )
+        return sent
+
+    audio_sender = (
+        _reply_audio_with_group_playlist
+        if group_music_connected
+        else audio_sender
+    )
+
     if service_name in MUSIC_BLOCKED_SERVICES:
         result = types.InlineQueryResultArticle(
             id=f"music_unsupported_{service_name}_{query.from_user.id}",
@@ -377,7 +452,7 @@ async def process_music_link(
                     )
                     send_started = time.perf_counter()
                     await send_audio_with_thumbnail(
-                        message.reply_audio,
+                        audio_sender,
                         audio=str(remote_cached["telegram_file_id"]),
                         title=cached_title,
                         performer=cached_performer,
@@ -455,7 +530,7 @@ async def process_music_link(
                     )
                     send_started = time.perf_counter()
                     await send_audio_with_thumbnail(
-                        message.reply_audio,
+                        audio_sender,
                         audio=str(social_cached["telegram_file_id"]),
                         title=cached_title,
                         performer=cached_performer,
@@ -527,7 +602,7 @@ async def process_music_link(
                     )
                     shared_send_started = time.perf_counter()
                     await send_audio_with_thumbnail(
-                        message.reply_audio,
+                        audio_sender,
                         audio=str(shared_result["file_id"]),
                         title=shared_title,
                         performer=shared_performer,
@@ -643,6 +718,17 @@ async def process_music_link(
                     )
 
                 if fast_result is not None and fast_error is None:
+                    await _remember_group_audio(
+                        file_id=str(fast_result.get("file_id") or "") or None,
+                        audio_message_id=(
+                            int(fast_result["message_id"])
+                            if fast_result.get("message_id") is not None
+                            else None
+                        ),
+                        title=fast_result.get("title"),
+                        performer=fast_result.get("performer"),
+                        duration=fast_result.get("duration"),
+                    )
                     request_lease.mark_success()
                     await maybe_delete_user_message(
                         message,
@@ -695,7 +781,7 @@ async def process_music_link(
                     )
                     send_started = time.perf_counter()
                     await send_audio_with_thumbnail(
-                        message.reply_audio,
+                        audio_sender,
                         audio=str(shared_result["file_id"]),
                         title=shared_title,
                         performer=shared_performer,
@@ -842,6 +928,17 @@ async def process_music_link(
                     )
 
                 if social_result is not None and social_error is None:
+                    await _remember_group_audio(
+                        file_id=str(social_result.get("file_id") or "") or None,
+                        audio_message_id=(
+                            int(social_result["message_id"])
+                            if social_result.get("message_id") is not None
+                            else None
+                        ),
+                        title=social_result.get("title"),
+                        performer=social_result.get("performer"),
+                        duration=social_result.get("duration"),
+                    )
                     request_lease.mark_success()
                     await maybe_delete_user_message(
                         message,
@@ -892,7 +989,7 @@ async def process_music_link(
                 business_id,
             )
             await send_audio_with_thumbnail(
-                message.reply_audio,
+                audio_sender,
                 audio=cached_file_id,
                 title=metadata.title,
                 performer=metadata.performer,
@@ -1005,7 +1102,7 @@ async def process_music_link(
                 )
                 upload_started = time.perf_counter()
                 sent = await send_audio_with_thumbnail(
-                    message.reply_audio,
+                    audio_sender,
                     audio=FSInputFile(
                         path,
                         filename=build_audio_filename(filename_title),
