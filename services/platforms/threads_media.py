@@ -139,6 +139,123 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
         return str(response.url), await response.text()
 
 
+def _threads_shortcode_from_numeric_id(value: object) -> str | None:
+    """Convert Threads' numeric media id back to its URL shortcode."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number <= 0:
+        return None
+
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    chars: list[str] = []
+    while number:
+        number, remainder = divmod(number, 64)
+        chars.append(alphabet[remainder])
+    return "".join(reversed(chars)) or None
+
+
+async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
+    """Ask Threads' route-definition endpoint which post a /share/ path targets.
+
+    This avoids relying on browser redirects. The endpoint returns a numeric
+    post_id even when the public share page itself is only a login shell.
+    """
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    if not path or "/share/" not in path:
+        return None
+
+    session = await get_http_session()
+    form = {
+        "route_urls[0]": path,
+        "__a": "1",
+        "__comet_req": "29",
+        "lsd": "XudMkvWGqcnLxbgeR25f3V",
+    }
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) "
+            "Gecko/20100101 Firefox/115.0"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-FB-LSD": "XudMkvWGqcnLxbgeR25f3V",
+        "X-ASBD-ID": "129477",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+    for origin in ("https://www.threads.com", "https://www.threads.net"):
+        try:
+            async with session.post(
+                f"{origin}/ajax/bulk-route-definitions/",
+                data=form,
+                headers=headers,
+                allow_redirects=True,
+                timeout=15,
+            ) as response:
+                body = await response.text()
+                if response.status != 200:
+                    logging.info(
+                        "Threads bulk-route resolver HTTP miss: origin=%s status=%s",
+                        origin,
+                        response.status,
+                    )
+                    continue
+        except Exception as exc:
+            logging.info(
+                "Threads bulk-route resolver request failed: origin=%s error=%s",
+                origin,
+                exc,
+            )
+            continue
+
+        payload_text = body.strip()
+        if payload_text.startswith("for (;;);"):
+            payload_text = payload_text[len("for (;;);"):].lstrip()
+
+        try:
+            payload = json.loads(payload_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logging.info(
+                "Threads bulk-route resolver returned non-JSON payload: origin=%s bytes=%s",
+                origin,
+                len(body),
+            )
+            continue
+
+        try:
+            result = payload["payload"]["payloads"][path]["result"]
+            if isinstance(result, dict) and isinstance(result.get("redirect_result"), dict):
+                result = result["redirect_result"]
+            post_id = result["exports"]["rootView"]["props"]["post_id"]
+        except (KeyError, TypeError):
+            logging.info(
+                "Threads bulk-route resolver had no post_id: origin=%s path=%s",
+                origin,
+                path,
+            )
+            continue
+
+        shortcode = _threads_shortcode_from_numeric_id(post_id)
+        if shortcode:
+            resolved = f"https://www.threads.com/t/{shortcode}"
+            logging.info(
+                "Resolved Threads share URL via bulk route: %s -> %s",
+                url,
+                resolved,
+            )
+            return resolved
+
+    return None
+
+
 async def resolve_threads_share_via_crawlers(url: str) -> str | None:
     """Try link-preview crawler UAs; Threads often serves them richer share metadata."""
     session = await get_http_session()
@@ -405,6 +522,10 @@ async def resolve_threads_url(
     if resolved_page:
         logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
         return resolved_page
+
+    bulk_resolved = await resolve_threads_share_via_bulk_route(candidate)
+    if bulk_resolved:
+        return bulk_resolved
 
     crawler_resolved = await resolve_threads_share_via_crawlers(candidate)
     if crawler_resolved:
