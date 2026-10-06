@@ -138,7 +138,10 @@ async def fetch_threads_share_page(url: str) -> tuple[str, str]:
     # while ordinary browser UAs can be left on the generic JS/login shell.
     async with session.get(
         url,
-        headers=THREADS_PAGE_HEADERS,
+        headers={
+            "User-Agent": THREADS_PAGE_HEADERS["User-Agent"],
+            "Accept-Language": "en-US,en;q=0.9",
+        },
         allow_redirects=True,
     ) as response:
         response.raise_for_status()
@@ -2437,45 +2440,51 @@ def _resolve_threads_share_via_warp_googlebot_sync(url: str) -> str | None:
 
 
 async def resolve_threads_share_fast(url: str) -> str:
-    """Resolve a Threads /share/<id>/ alias with the public crawler path first.
+    """Resolve a Threads /share/<id>/ with the current public SSR path.
 
-    Threads' current server behavior exposes the canonical redirect/SSR payload
-    to Googlebot. This is the same request shape used by current working Threads
-    download clients. Browser-extension/CDP probes remain fallbacks only.
+    Threads' crawler response is intermittent, so retry a small number of
+    cheap Googlebot requests. A public post normally resolves on the first
+    request; retries are only paid for stubborn aliases.
     """
     candidate = (url or "").strip()
     if not THREADS_SHARE_URL_RE.fullmatch(_threads_path_only(candidate)):
         return candidate
 
-    # Primary path: one Googlebot GET, redirects followed. Check both
-    # response.url and the SSR HTML because Threads can expose either.
-    try:
-        final_url, page = await fetch_threads_share_page(candidate)
-        resolved = strip_threads_url(final_url)
-        if extract_threads_post_code(resolved):
-            logging.info(
-                "Resolved Threads share URL via Googlebot redirect: %s -> %s",
-                candidate,
-                resolved,
-            )
-            return resolved
+    for attempt in range(1, 6):
+        try:
+            final_url, page = await fetch_threads_share_page(candidate)
+            resolved = strip_threads_url(final_url)
+            if extract_threads_post_code(resolved):
+                logging.info(
+                    "Resolved Threads share URL via Googlebot redirect: %s -> %s attempt=%s",
+                    candidate,
+                    resolved,
+                    attempt,
+                )
+                return resolved
 
-        resolved = _extract_threads_post_url_from_html(page)
-        if resolved:
+            resolved = _extract_threads_post_url_from_html(page)
+            if resolved:
+                logging.info(
+                    "Resolved Threads share URL via Googlebot SSR: %s -> %s attempt=%s",
+                    candidate,
+                    resolved,
+                    attempt,
+                )
+                return resolved
+        except Exception as exc:
             logging.info(
-                "Resolved Threads share URL via Googlebot SSR: %s -> %s",
+                "Threads Googlebot resolver failed: url=%s attempt=%s error=%s",
                 candidate,
-                resolved,
+                attempt,
+                exc,
             )
-            return resolved
-    except Exception as exc:
-        logging.info(
-            "Threads fast Googlebot resolver failed: url=%s error=%s",
-            candidate,
-            exc,
-        )
 
-    # A different egress can matter for Threads' anonymous serving rules.
+        if attempt < 5:
+            await asyncio.sleep(1.5)
+
+    # One alternate egress check. WARP is cheap and sometimes avoids an
+    # anonymous-serving decision tied to the Render IP.
     resolved = await asyncio.to_thread(
         _resolve_threads_share_via_warp_googlebot_sync,
         candidate,
@@ -2483,24 +2492,10 @@ async def resolve_threads_share_fast(url: str) -> str:
     if resolved:
         return resolved
 
-    # Fallback: exact MV3 extension-worker fetch semantics.
-    resolved = await asyncio.to_thread(
-        _resolve_threads_share_via_extension_worker_sync,
+    logging.warning(
+        "Threads share alias remains unresolved after public crawler checks: %s",
         candidate,
     )
-    if not resolved:
-        resolved = await asyncio.to_thread(
-            _resolve_threads_share_via_cdp_fetch_sync,
-            candidate,
-        )
-    if resolved:
-        logging.info(
-            "Resolved Threads share URL via Chromium fallback: %s -> %s",
-            candidate,
-            resolved,
-        )
-        return resolved
-
     return candidate
 
 async def resolve_threads_url(
