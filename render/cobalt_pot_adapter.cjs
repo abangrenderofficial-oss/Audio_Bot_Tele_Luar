@@ -2207,6 +2207,163 @@ async function fetchCurlXThreadsMedia(mediaUrl, prefix) {
   throw new Error(lastError);
 }
 
+function collectThreadsPostNodesInSsr(html) {
+  const found = [];
+  const seen = new Set();
+
+  const walk = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+
+    const code = String(value.code || "").trim();
+    const username = String(value?.user?.username || "").trim();
+    const hasMedia =
+      (Array.isArray(value.video_versions) && value.video_versions.length > 0) ||
+      (Array.isArray(value.carousel_media) && value.carousel_media.length > 0) ||
+      Boolean(value?.audio?.audio_src);
+    if (code && username && hasMedia && !seen.has(code)) {
+      seen.add(code);
+      found.push(value);
+    }
+
+    for (const item of Object.values(value)) walk(item);
+  };
+
+  const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRe.exec(String(html || ""))) !== null) {
+    const attrs = String(match[1] || "");
+    if (!/\btype=["']application\/json["']/i.test(attrs)) continue;
+    try {
+      walk(JSON.parse(decodeThreadsSsrJson(match[2])));
+    } catch {}
+  }
+  return found;
+}
+
+function extractThreadsHandleFromMicrolink(data) {
+  const values = [];
+  const push = (value) => {
+    if (typeof value === "string" && value.trim()) values.push(value.trim());
+    else if (value && typeof value === "object") {
+      for (const item of Object.values(value)) {
+        if (typeof item === "string" && item.trim()) values.push(item.trim());
+      }
+    }
+  };
+  push(data?.author);
+  push(data?.title);
+  push(data?.description);
+  push(data?.publisher);
+
+  for (const value of values) {
+    const match = value.match(/@([A-Za-z0-9._-]{2,64})/);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function normalizeThreadsMatchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function resolveThreadsPostFromMicrolinkData(data) {
+  const handle = extractThreadsHandleFromMicrolink(data);
+  if (!handle) return "";
+
+  const profileUrl = "https://www.threads.com/@" + encodeURIComponent(handle);
+  const metadataText = normalizeThreadsMatchText(
+    [data?.title, data?.description].filter(Boolean).join(" ")
+  );
+  const targetDate = Date.parse(String(data?.date || ""));
+
+  const variants = [
+    { name: "anonymous", headers: { "Accept-Language": "en" } },
+    {
+      name: "crawler",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "accept-language": "en-US,en;q=0.9",
+      },
+    },
+  ];
+
+  for (const variant of variants) {
+    try {
+      const response = await fetch(profileUrl, {
+        redirect: "follow",
+        headers: variant.headers,
+        signal: AbortSignal.timeout(15000),
+      });
+      const html = await response.text();
+      const posts = collectThreadsPostNodesInSsr(html);
+      let best = null;
+
+      for (const node of posts) {
+        if (String(node?.user?.username || "").toLowerCase() !== handle.toLowerCase()) {
+          continue;
+        }
+        let score = 100;
+        const caption = normalizeThreadsMatchText(node?.caption?.text || "");
+        if (metadataText && caption) {
+          const sample = caption.slice(0, Math.min(80, caption.length));
+          if (sample.length >= 12 && metadataText.includes(sample)) score += 140;
+          else {
+            const words = sample.split(" ").filter((w) => w.length >= 4);
+            const matched = words.filter((w) => metadataText.includes(w)).length;
+            if (words.length && matched / words.length >= 0.6) score += 80;
+          }
+        }
+
+        const takenMs = Number(node?.taken_at || 0) * 1000;
+        if (Number.isFinite(targetDate) && targetDate > 0 && takenMs > 0) {
+          const delta = Math.abs(targetDate - takenMs);
+          if (delta <= 10 * 60 * 1000) score += 120;
+          else if (delta <= 2 * 60 * 60 * 1000) score += 70;
+          else if (delta <= 24 * 60 * 60 * 1000) score += 25;
+        }
+
+        if (!best || score > best.score) best = { node, score };
+      }
+
+      // Require evidence beyond the username alone. This avoids guessing a
+      // random recent post when the share metadata is too generic.
+      if (best && best.score >= 170) {
+        const code = String(best.node?.code || "").trim();
+        const username = String(best.node?.user?.username || handle).trim();
+        if (code && username) {
+          const canonical =
+            "https://www.threads.com/@" + username + "/post/" + code;
+          console.log(
+            `[SOCIAL-WORKER] threads Microlink profile match route=${variant.name} score=${best.score} -> ${canonical}`
+          );
+          return canonical;
+        }
+      }
+
+      console.log(
+        `[SOCIAL-WORKER] threads Microlink profile scan route=${variant.name} handle=@${handle} posts=${posts.length} best=${best?.score || 0}`
+      );
+    } catch (error) {
+      console.warn(
+        "[SOCIAL-WORKER] threads Microlink profile scan failed:",
+        String(error?.message || error).slice(0, 500)
+      );
+    }
+  }
+
+  return "";
+}
+
 async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
   const started = Date.now();
   const endpoint = "https://api.microlink.io?url=" + encodeURIComponent(mediaUrl);
@@ -2225,7 +2382,24 @@ async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
   }
 
   const data = payload?.data || {};
-  const resolvedUrl = String(data?.url || "").trim();
+  let resolvedUrl = String(data?.url || "").trim();
+
+  console.log(
+    "[SOCIAL-WORKER] threads Microlink meta title=" +
+    JSON.stringify(String(data?.title || "").slice(0, 180)) +
+    " author=" + JSON.stringify(String(data?.author || "").slice(0, 120)) +
+    " date=" + JSON.stringify(String(data?.date || "").slice(0, 80)) +
+    " description=" + JSON.stringify(String(data?.description || "").slice(0, 240))
+  );
+
+  if (
+    isThreadsShareAlias(mediaUrl) &&
+    (!resolvedUrl || resolvedUrl === mediaUrl)
+  ) {
+    const inferred = await resolveThreadsPostFromMicrolinkData(data);
+    if (inferred) resolvedUrl = inferred;
+  }
+
   const candidates = [];
   const seen = new Set();
   const add = (value, kind, score) => {
@@ -2291,7 +2465,13 @@ async function fetchMicrolinkThreadsMedia(mediaUrl, prefix) {
     /https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^/?#]+\/post\/[A-Za-z0-9_-]+/i.test(resolvedUrl)
   ) {
     console.log("[SOCIAL-WORKER] threads Microlink canonical ready -> " + resolvedUrl);
-    for (const fallback of [fetchFxThreadsMedia, fetchVxThreadsMedia, fetchThreadsDlMedia, fetchDlpandaThreadsMedia]) {
+    for (const fallback of [
+      fetchThreadsSsrMedia,
+      fetchFxThreadsMedia,
+      fetchVxThreadsMedia,
+      fetchThreadsDlMedia,
+      fetchDlpandaThreadsMedia,
+    ]) {
       try { return await fallback(resolvedUrl, prefix); }
       catch (error) { lastError = String(error?.message || error).slice(0, 500); }
     }
@@ -4501,7 +4681,7 @@ server.listen(PORT, HOST, () => {
     let testFile = null;
     try {
       const result = await runSocialWorkerAudio(
-        "https://www.threads.com/share/InQUBOY9S/",
+        "https://www.threads.com/share/BAV6glx_i6/",
         "threads"
       );
       testFile = result?.filePath || null;
