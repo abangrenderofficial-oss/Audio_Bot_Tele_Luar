@@ -35,6 +35,7 @@ from handlers.youtube import (
 )
 from services.logger import logger as logging, summarize_url_for_log
 from services.admin_music_monitor import mirror_private_audio_to_admin_group
+from services.private_music_playlist import record_private_audio
 from services.media.audio_flow import run_audio_flow
 from services.media.audio_metadata import (
     build_audio_filename,
@@ -225,19 +226,32 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
     async def _reply_audio_with_admin_monitor(**kwargs):
         sent = await message.reply_audio(**kwargs)
         audio = getattr(sent, "audio", None)
+        private_title = (
+            kwargs.get("title")
+            or getattr(audio, "title", None)
+            or getattr(audio, "file_name", None)
+        )
+        private_performer = (
+            kwargs.get("performer")
+            or getattr(audio, "performer", None)
+        )
+        private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
+        await record_private_audio(
+            message,
+            service="spotify",
+            source_url=source_url,
+            file_id=getattr(audio, "file_id", None),
+            audio_message_id=getattr(sent, "message_id", None),
+            title=private_title,
+            performer=private_performer,
+            duration=private_duration,
+        )
         await mirror_private_audio_to_admin_group(
             message,
             file_id=getattr(audio, "file_id", None),
-            title=(
-                kwargs.get("title")
-                or getattr(audio, "title", None)
-                or getattr(audio, "file_name", None)
-            ),
-            performer=(
-                kwargs.get("performer")
-                or getattr(audio, "performer", None)
-            ),
-            duration=getattr(audio, "duration", None) or kwargs.get("duration"),
+            title=private_title,
+            performer=private_performer,
+            duration=private_duration,
             platform="Spotify",
         )
         return sent
@@ -511,6 +525,16 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     duration=result_duration,
                 )
                 if not group_music_connected:
+                    await record_private_audio(
+                        message,
+                        service="spotify",
+                        source_url=source_url,
+                        file_id=file_id,
+                        audio_message_id=fast_result.get("message_id"),
+                        title=title,
+                        performer=performer,
+                        duration=result_duration,
+                    )
                     await mirror_private_audio_to_admin_group(
                         message,
                         file_id=file_id,
