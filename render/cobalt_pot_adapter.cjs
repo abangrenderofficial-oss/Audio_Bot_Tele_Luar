@@ -1129,6 +1129,120 @@ function socialReadMeta(filePath, fallback = "") {
   }
 }
 
+async function fetchThreadsDlMedia(mediaUrl, prefix) {
+  const apiUrl = "https://www.threadsdl.app/api/threads";
+  const proxyBase = "https://www.threadsdl.app/api/proxy";
+  const started = Date.now();
+
+  const apiResponse = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
+    body: JSON.stringify({ url: mediaUrl }),
+    signal: AbortSignal.timeout(20000),
+  });
+
+  const raw = await apiResponse.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+
+  if (!apiResponse.ok || !data || !Array.isArray(data.medias)) {
+    throw new Error(
+      `ThreadsDL API failed status=${apiResponse.status}: ${String(raw || "invalid response").slice(0, 500)}`
+    );
+  }
+
+  const video = data.medias.find(
+    (item) =>
+      item &&
+      Number(item.mediaType) === 2 &&
+      typeof item.cover === "string" &&
+      /^https:\/\//i.test(item.cover)
+  );
+  if (!video) {
+    throw new Error("ThreadsDL API returned no downloadable video");
+  }
+
+  const proxyUrl = `${proxyBase}?${new URLSearchParams({ url: video.cover }).toString()}`;
+  const mediaResponse = await fetch(proxyUrl, {
+    redirect: "follow",
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      "referer": "https://www.threads.com/",
+      "accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.1",
+    },
+    signal: AbortSignal.timeout(90000),
+  });
+
+  if (!mediaResponse.ok || !mediaResponse.body) {
+    throw new Error(
+      `ThreadsDL media proxy failed status=${mediaResponse.status}`
+    );
+  }
+
+  const contentType = String(
+    mediaResponse.headers.get("content-type") || ""
+  ).toLowerCase();
+  if (
+    contentType.includes("json") ||
+    contentType.includes("html") ||
+    contentType.startsWith("text/")
+  ) {
+    const detail = await mediaResponse.text().catch(() => "");
+    throw new Error(
+      `ThreadsDL media proxy returned ${contentType || "non-media"}: ${detail.slice(0, 400)}`
+    );
+  }
+
+  const filePath = `${prefix}.threads.mp4`;
+  const file = fs.openSync(filePath, "w");
+  let total = 0;
+  try {
+    const reader = mediaResponse.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      total += value.byteLength;
+      if (total > YOUTUBE_WORKER_MAX_SOURCE_BYTES) {
+        try { await reader.cancel(); } catch {}
+        throw new Error("ThreadsDL media exceeded safety limit");
+      }
+      fs.writeSync(file, Buffer.from(value));
+    }
+  } finally {
+    fs.closeSync(file);
+  }
+
+  if (total <= 0) {
+    try { fs.rmSync(filePath, { force: true }); } catch {}
+    throw new Error("ThreadsDL media download was empty");
+  }
+
+  const username = String(data.username || "")
+    .trim()
+    .replace(/^@+/, "");
+  const text = String(data.text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  console.log(
+    `[SOCIAL-WORKER] threads ThreadsDL ready bytes=${total} ms=${Date.now() - started} username=${username || "-"}`
+  );
+
+  return {
+    filePath,
+    metadata: {
+      title: text.slice(0, 180) || (username ? `Original audio — @${username}` : "Threads audio"),
+      performer: username ? `@${username}` : "Threads",
+      duration: null,
+    },
+  };
+}
+
 function probeAudioCodec(filePath) {
   const result = spawnSync(
     "ffprobe",
@@ -1282,28 +1396,47 @@ async function runSocialWorkerAudio(mediaUrl, source) {
   };
 
   try {
-    console.log(`[SOCIAL-WORKER] ${source} direct download start`);
-    let directError = null;
-    try {
-      await runYoutubeWorkerProcess([...baseArgs, mediaUrl], 120000);
-    } catch (error) {
-      directError = error;
-      console.warn(
-        `[SOCIAL-WORKER] ${source} direct failed:`,
-        String(error?.message || error).slice(0, 1200)
-      );
-      clearOutputs();
+    let threadsProvider = null;
+    let providerRawPath = null;
+
+    if (source === "threads") {
+      try {
+        console.log("[SOCIAL-WORKER] threads ThreadsDL fallback start");
+        threadsProvider = await fetchThreadsDlMedia(mediaUrl, prefix);
+        providerRawPath = threadsProvider.filePath;
+      } catch (error) {
+        console.warn(
+          "[SOCIAL-WORKER] threads ThreadsDL fallback failed:",
+          String(error?.message || error).slice(0, 1200)
+        );
+        clearOutputs();
+      }
     }
 
-    if (directError) {
-      console.log(`[SOCIAL-WORKER] ${source} WARP fallback start`);
-      await runYoutubeWorkerProcess(
-        [...baseArgs, "--proxy", YOUTUBE_WORKER_PROXY, mediaUrl],
-        120000
-      );
+    if (!providerRawPath) {
+      console.log(`[SOCIAL-WORKER] ${source} direct download start`);
+      let directError = null;
+      try {
+        await runYoutubeWorkerProcess([...baseArgs, mediaUrl], 120000);
+      } catch (error) {
+        directError = error;
+        console.warn(
+          `[SOCIAL-WORKER] ${source} direct failed:`,
+          String(error?.message || error).slice(0, 1200)
+        );
+        clearOutputs();
+      }
+
+      if (directError) {
+        console.log(`[SOCIAL-WORKER] ${source} WARP fallback start`);
+        await runYoutubeWorkerProcess(
+          [...baseArgs, "--proxy", YOUTUBE_WORKER_PROXY, mediaUrl],
+          120000
+        );
+      }
     }
 
-    const rawPath = findMediaOutput();
+    const rawPath = providerRawPath || findMediaOutput();
     const rawStat = fs.statSync(rawPath);
     if (rawStat.size <= 0) {
       throw new Error("social worker media is empty");
@@ -1329,7 +1462,12 @@ async function runSocialWorkerAudio(mediaUrl, source) {
     const rawTitle = socialReadMeta(titlePath, "");
 
     let resolvedSound = null;
-    if (source === "instagram") {
+    if (source === "threads" && threadsProvider?.metadata) {
+      resolvedSound = {
+        title: threadsProvider.metadata.title,
+        performer: threadsProvider.metadata.performer,
+      };
+    } else if (source === "instagram") {
       resolvedSound = await fetchInstagramSoundMetadata(mediaUrl);
     }
 
@@ -1356,7 +1494,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       (
         fallbackHandle
           ? `Original audio — @${fallbackHandle}`
-          : rawTitle || "Instagram audio"
+          : rawTitle || `${socialSourceLabel(source)} audio`
       )
     );
     const performer = (
@@ -1364,7 +1502,7 @@ async function runSocialWorkerAudio(mediaUrl, source) {
       (
         fallbackHandle
           ? `@${fallbackHandle}`
-          : "Instagram"
+          : socialSourceLabel(source)
       )
     );
     const rawDuration = socialReadMeta(durationPath, "");
