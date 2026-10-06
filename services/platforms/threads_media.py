@@ -235,6 +235,7 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
             "--disable-extensions",
             "--disable-sync",
             "--no-first-run",
+            "--proxy-server=socks5://127.0.0.1:1080",
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=0",
             f"--user-data-dir={profile_dir}",
