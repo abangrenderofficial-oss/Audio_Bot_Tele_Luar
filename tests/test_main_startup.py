@@ -59,6 +59,47 @@ async def test_main_applies_polling_backpressure_settings(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_main_uses_webhook_transport_when_render_url_is_configured(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_BASE_URL", "https://abangrender-music-bot.onrender.com")
+    monkeypatch.setattr(
+        main_module.bot,
+        "get_me",
+        AsyncMock(return_value=SimpleNamespace(username="TestBot")),
+    )
+    monkeypatch.setattr(main_module.bot, "set_my_commands", AsyncMock())
+    monkeypatch.setattr(main_module.bot, "delete_webhook", AsyncMock())
+    monkeypatch.setattr(main_module.db, "init_db", AsyncMock())
+    monkeypatch.setattr(main_module, "start_analytics_workers", AsyncMock())
+    monkeypatch.setattr(main_module, "stop_analytics_workers", AsyncMock())
+    monkeypatch.setattr(main_module, "shutdown_download_queue", AsyncMock())
+    monkeypatch.setattr(main_module, "close_http_session", AsyncMock())
+    monkeypatch.setattr(main_module.session, "close", AsyncMock())
+    monkeypatch.setattr(main_module, "set_app_context", lambda **_kwargs: None)
+    monkeypatch.setattr(main_module, "crontab", Mock())
+    monkeypatch.setattr(main_module, "setup_dialogs", Mock())
+    monkeypatch.setattr(main_module.dp, "include_router", Mock())
+    monkeypatch.setattr(main_module.dp.message, "outer_middleware", Mock())
+    monkeypatch.setattr(main_module.dp.callback_query, "outer_middleware", Mock())
+    monkeypatch.setattr(main_module.dp.inline_query, "outer_middleware", Mock())
+    monkeypatch.setattr(main_module.dp.guest_message, "outer_middleware", Mock())
+    monkeypatch.setattr(main_module.dp, "start_polling", AsyncMock())
+    monkeypatch.setattr(
+        main_module,
+        "_run_webhook_server",
+        AsyncMock(side_effect=RuntimeError("stop-webhook")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop-webhook"):
+        await main_module.main()
+
+    main_module._run_webhook_server.assert_awaited_once_with(
+        "https://abangrender-music-bot.onrender.com"
+    )
+    main_module.bot.delete_webhook.assert_not_awaited()
+    main_module.dp.start_polling.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_main_registers_one_shared_middleware_instance_per_class(monkeypatch):
     import middlewares
 

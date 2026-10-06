@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 import os
+import signal
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import httpx
+from aiohttp import web
 from aiocron import crontab
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -14,6 +16,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.types import BotCommandScopeAllGroupChats
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiogram_dialog import setup_dialogs
 
 from app_context import set_app_context
@@ -469,6 +472,89 @@ async def _run_social_music_selftest_from_env() -> None:
             )
 
 
+def _resolve_webhook_base_url() -> str:
+    return (
+        os.getenv("TELEGRAM_WEBHOOK_BASE_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or ""
+    ).strip().rstrip("/")
+
+
+def _resolve_webhook_path() -> str:
+    value = (os.getenv("TELEGRAM_WEBHOOK_PATH") or "/telegram/webhook").strip()
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value
+
+
+def _build_webhook_secret() -> str:
+    return hashlib.sha256(f"musix-webhook:{BOT_TOKEN}".encode("utf-8")).hexdigest()
+
+
+async def _run_webhook_server(base_url: str) -> None:
+    webhook_path = _resolve_webhook_path()
+    webhook_url = f"{base_url}{webhook_path}"
+    webhook_secret = _build_webhook_secret()
+    port = int(os.getenv("PORT", "8080"))
+
+    async def _health(_request: web.Request) -> web.Response:
+        return web.json_response(
+            {"ok": True, "service": "abangrender-music-bot", "mode": "webhook"}
+        )
+
+    web_app = web.Application()
+    web_app.router.add_get("/", _health)
+    web_app.router.add_get("/health", _health)
+    web_app.router.add_get("/ready", _health)
+
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        handle_in_background=True,
+        secret_token=webhook_secret,
+    ).register(web_app, path=webhook_path)
+    setup_application(web_app, dp, bot=bot)
+
+    runner = web.AppRunner(web_app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+
+    allowed_updates = dp.resolve_used_update_types()
+    await bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=allowed_updates,
+        secret_token=webhook_secret,
+        drop_pending_updates=False,
+    )
+
+    logging.event("webhook_started", url=webhook_url, port=port)
+    logging.info(
+        "[STARTUP] Telegram webhook ready: %s (port=%s)",
+        webhook_url,
+        port,
+    )
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed_signals = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+            installed_signals.append(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    try:
+        await stop_event.wait()
+    finally:
+        for sig in installed_signals:
+            with suppress(Exception):
+                loop.remove_signal_handler(sig)
+        with suppress(Exception):
+            await runner.cleanup()
+
+
 async def _run_music_selftest_from_env() -> None:
     url = (os.getenv("MUSIC_SELFTEST_URL") or "").strip()
     if not url or url.lower() in {"0", "off", "false", "disabled"}:
@@ -594,7 +680,10 @@ async def main():
                 commands=GROUP_MUSIC_COMMANDS,
                 scope=BotCommandScopeAllGroupChats(),
             )
-            await bot.delete_webhook(drop_pending_updates=False)
+
+            webhook_base_url = _resolve_webhook_base_url()
+            if not webhook_base_url:
+                await bot.delete_webhook(drop_pending_updates=False)
 
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
 
@@ -612,18 +701,21 @@ async def main():
                 * 1000.0,
                 bot_username=bot_me.username,
             )
-            logging.event("polling_started")
             logging.info("[STARTUP] Bot started successfully. Listening for updates...")
-            await dp.start_polling(
-                bot,
-                allowed_updates=dp.resolve_used_update_types(),
-                tasks_concurrency_limit=max(
-                    1, int(BOT_POLLING_TASKS_CONCURRENCY_LIMIT)
-                ),
-            )
+            if webhook_base_url:
+                await _run_webhook_server(webhook_base_url)
+            else:
+                logging.event("polling_started")
+                await dp.start_polling(
+                    bot,
+                    allowed_updates=dp.resolve_used_update_types(),
+                    tasks_concurrency_limit=max(
+                        1, int(BOT_POLLING_TASKS_CONCURRENCY_LIMIT)
+                    ),
+                )
         finally:
             logging.info("[SHUTDOWN] Bot shutting down...")
-            logging.event("polling_stopping")
+            logging.event("bot_transport_stopping")
             if "heartbeat_task" in locals():
                 heartbeat_task.cancel()
             if "music_cache_keepalive_task" in locals():
