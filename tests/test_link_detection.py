@@ -4,6 +4,7 @@ from services.links.detection import detect_supported_service, extract_supported
 def test_detect_supported_service_covers_all_supported_group_guard_links():
     assert detect_supported_service("https://www.instagram.com/p/demo") == "instagram"
     assert detect_supported_service("https://www.threads.com/@demo/post/Abc_123") == "threads"
+    assert detect_supported_service("https://www.threads.com/share/BAV6glx_i6/") == "threads"
     assert detect_supported_service("https://www.tiktok.com/@demo/video/1") == "tiktok"
     assert detect_supported_service("https://soundcloud.com/artist/track") == "soundcloud"
     assert detect_supported_service("https://open.spotify.com/track/abc123?si=demo") == "spotify"
@@ -57,3 +58,10 @@ def test_extract_supported_links_canonicalizes_tracking_query_params():
         ("instagram", "https://www.instagram.com/reel/abc/"),
         ("youtube", "https://www.youtube.com/watch?v=abc123&t=30"),
     ]
+
+
+def test_extract_supported_link_accepts_threads_share_links():
+    assert extract_supported_link("https://www.threads.com/share/BAV6glx_i6/?utm_source=share") == (
+        "threads",
+        "https://www.threads.com/share/BAV6glx_i6/",
+    )
