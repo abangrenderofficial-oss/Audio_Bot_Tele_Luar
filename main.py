@@ -9,7 +9,6 @@ from typing import Callable, Optional
 import httpx
 from aiocron import crontab
 from aiogram import Bot, Dispatcher
-from aiohttp import web
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
@@ -41,24 +40,6 @@ from utils.http_client import close_http_session
 logging = logging.bind(service="main")
 
 _HEARTBEAT_PATH = "/tmp/bot_heartbeat"
-
-
-async def _start_render_health_server() -> web.AppRunner:
-    app = web.Application()
-
-    async def _health(_request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "service": "music-bot"})
-
-    app.router.add_get("/", _health)
-    app.router.add_get("/health", _health)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "10000"))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info("[STARTUP] Health server listening on 0.0.0.0:%s", port)
-    return runner
 
 
 async def _heartbeat_loop():
@@ -613,7 +594,6 @@ async def main():
 
             crontab("0 0 * * *", func=clear_downloads_and_notify, start=True)
 
-            health_runner = await _start_render_health_server()
             heartbeat_task = asyncio.create_task(_heartbeat_loop())
             music_cache_keepalive_task = asyncio.create_task(
                 _music_cache_keepalive_loop()
@@ -642,9 +622,6 @@ async def main():
             logging.event("polling_stopping")
             if "heartbeat_task" in locals():
                 heartbeat_task.cancel()
-            if "health_runner" in locals():
-                with suppress(Exception):
-                    await health_runner.cleanup()
             if "music_cache_keepalive_task" in locals():
                 music_cache_keepalive_task.cancel()
             if "selftest_task" in locals():
