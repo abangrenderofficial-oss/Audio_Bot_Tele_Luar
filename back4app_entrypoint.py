@@ -119,11 +119,13 @@ def _verify_warp_proxy() -> bool:
 
 
 def _start_warp_proxy() -> subprocess.Popen | None:
-    if not _env_truthy("YOUTUBE_WARP_PROXY_ENABLED"):
+    youtube_enabled = _env_truthy("YOUTUBE_WARP_PROXY_ENABLED")
+    threads_enabled = _env_truthy("THREADS_WARP_PROXY_ENABLED")
+    if not youtube_enabled and not threads_enabled:
         return None
 
     configured_proxy = (os.getenv("YTDLP_YOUTUBE_PROXY") or "").strip()
-    if configured_proxy:
+    if youtube_enabled and configured_proxy and not threads_enabled:
         print("[WARP] external YouTube proxy already configured; built-in WARP skipped", flush=True)
         return None
 
@@ -149,8 +151,16 @@ def _start_warp_proxy() -> subprocess.Popen | None:
         print("[WARP] proxy opened but WARP verification failed; continuing direct", flush=True)
         return None
 
-    os.environ["YTDLP_YOUTUBE_PROXY"] = WARP_PROXY_URL
-    print(f"[WARP] verified and ready at {WARP_PROXY_URL}", flush=True)
+    if youtube_enabled and not configured_proxy:
+        os.environ["YTDLP_YOUTUBE_PROXY"] = WARP_PROXY_URL
+    if threads_enabled:
+        os.environ["THREADS_WARP_PROXY_URL"] = WARP_PROXY_URL
+    scopes = ",".join(
+        scope
+        for scope, enabled in (("youtube", youtube_enabled), ("threads", threads_enabled))
+        if enabled
+    )
+    print(f"[WARP] verified and ready at {WARP_PROXY_URL} scopes={scopes}", flush=True)
     return process
 
 
