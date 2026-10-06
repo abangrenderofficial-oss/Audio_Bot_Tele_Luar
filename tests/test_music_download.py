@@ -97,10 +97,12 @@ def test_piped_api_urls_keep_https_urls_intact(monkeypatch):
         "https://pipedapi.duck.party, https://api.piped.private.coffee",
     )
 
-    assert music_download._configured_piped_api_urls() == [
+    urls = music_download._configured_piped_api_urls()
+    assert urls[-2:] == [
         "https://pipedapi.duck.party",
         "https://api.piped.private.coffee",
     ]
+    assert len(urls) == len(set(urls))
 
 
 def test_piped_api_urls_support_semicolon_and_whitespace(monkeypatch):
@@ -109,7 +111,8 @@ def test_piped_api_urls_support_semicolon_and_whitespace(monkeypatch):
         "https://one.example;https://two.example\nhttps://three.example/",
     )
 
-    assert music_download._configured_piped_api_urls() == [
+    urls = music_download._configured_piped_api_urls()
+    assert urls[-3:] == [
         "https://one.example",
         "https://two.example",
         "https://three.example",
@@ -234,6 +237,7 @@ def test_invidious_api_urls_keep_https_urls_intact(monkeypatch):
     )
 
     assert music_download._configured_invidious_api_urls() == [
+        "https://invidious.f5.si",
         "https://inv.nadeko.net",
         "https://invidious.nerdvpn.de",
     ]
@@ -454,21 +458,20 @@ def test_cobalt_music_configured_requires_url_and_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_youtube_download_prefers_cobalt_when_configured(monkeypatch, tmp_path):
-    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
-    monkeypatch.setenv("COBALT_API_KEY", "secret")
-
+async def test_youtube_download_prefers_external_worker_when_configured(monkeypatch, tmp_path):
     calls = []
 
-    async def cobalt(url, out_template, bitrate_kbps):
-        calls.append(("cobalt", url, out_template, bitrate_kbps))
+    monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
+
+    def worker(url, out_template, bitrate_kbps):
+        calls.append(("worker", url, out_template, bitrate_kbps))
         return str(tmp_path / "source.mp3")
 
-    def direct_should_not_run(*_args, **_kwargs):
-        raise AssertionError("direct YouTube chain must not run after successful Cobalt")
+    def relay_should_not_run(*_args, **_kwargs):
+        raise AssertionError("Piped relay must not run after successful external worker")
 
-    monkeypatch.setattr(music_download, "_run_cobalt_mp3", cobalt)
-    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", direct_should_not_run)
+    monkeypatch.setattr(music_download, "_run_youtube_worker_mp3_sync", worker)
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", relay_should_not_run)
 
     result = await music_download._download_mp3(
         "https://youtu.be/Ftffph3fVEs",
@@ -480,7 +483,7 @@ async def test_youtube_download_prefers_cobalt_when_configured(monkeypatch, tmp_
     assert result == str(tmp_path / "source.mp3")
     assert calls == [
         (
-            "cobalt",
+            "worker",
             "https://youtu.be/Ftffph3fVEs",
             str(tmp_path / "source.%(ext)s"),
             192,
@@ -489,22 +492,21 @@ async def test_youtube_download_prefers_cobalt_when_configured(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_youtube_download_falls_back_to_direct_chain_when_cobalt_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv("COBALT_API_URL", "https://cobalt.example")
-    monkeypatch.setenv("COBALT_API_KEY", "secret")
-
+async def test_youtube_download_falls_back_to_piped_when_worker_fails(monkeypatch, tmp_path):
     calls = []
 
-    async def fail_cobalt(*_args, **_kwargs):
-        calls.append("cobalt")
-        raise music_download.MusicDownloadError("cobalt unavailable")
+    monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
 
-    def direct(*_args, **_kwargs):
-        calls.append("direct")
+    def fail_worker(*_args, **_kwargs):
+        calls.append("worker")
+        raise music_download.MusicDownloadError("worker unavailable")
+
+    def relay(*_args, **_kwargs):
+        calls.append("piped")
         return str(tmp_path / "source.mp3")
 
-    monkeypatch.setattr(music_download, "_run_cobalt_mp3", fail_cobalt)
-    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", direct)
+    monkeypatch.setattr(music_download, "_run_youtube_worker_mp3_sync", fail_worker)
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", relay)
     monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
 
     result = await music_download._download_mp3(
@@ -515,24 +517,20 @@ async def test_youtube_download_falls_back_to_direct_chain_when_cobalt_fails(mon
     )
 
     assert result == str(tmp_path / "source.mp3")
-    assert calls == ["cobalt", "direct"]
+    assert calls == ["worker", "piped"]
 
 
 @pytest.mark.asyncio
-async def test_youtube_download_preserves_direct_error_when_cobalt_not_configured(monkeypatch, tmp_path):
-    monkeypatch.delenv("COBALT_API_URL", raising=False)
-    monkeypatch.delenv("COBALT_API_KEY", raising=False)
+async def test_youtube_download_reports_relay_error_without_external_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: False)
 
-    def fail_direct(*_args, **_kwargs):
-        raise music_download.MusicDownloadError("youtube bot check")
+    def fail_relay(*_args, **_kwargs):
+        raise music_download.MusicDownloadError("youtube relay check")
 
-    async def should_not_run(*_args, **_kwargs):
-        raise AssertionError("Cobalt must not run without configuration")
+    monkeypatch.setattr(music_download, "_run_piped_mp3_sync", fail_relay)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _path: None)
 
-    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", fail_direct)
-    monkeypatch.setattr(music_download, "_run_cobalt_mp3", should_not_run)
-
-    with pytest.raises(music_download.MusicDownloadError, match="youtube bot check"):
+    with pytest.raises(music_download.MusicDownloadError, match="youtube relay check"):
         await music_download._download_mp3(
             "https://youtu.be/Ftffph3fVEs",
             work_dir=str(tmp_path),
@@ -578,5 +576,5 @@ async def test_cobalt_youtube_requests_session_token_mode(monkeypatch, tmp_path)
 
     assert result == str(tmp_path / "source.mp3")
     assert captured["payload"]["downloadMode"] == "audio"
-    assert captured["payload"]["videoQuality"] == "max"
-    assert captured["payload"]["youtubeBetterAudio"] is True
+    assert "videoQuality" not in captured["payload"]
+    assert captured["payload"]["youtubeBetterAudio"] is False

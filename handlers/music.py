@@ -339,8 +339,15 @@ async def process_music_link(
         await _remember_group_audio(
             file_id=getattr(audio, "file_id", None),
             audio_message_id=getattr(sent, "message_id", None),
-            title=kwargs.get("title") or getattr(audio, "file_name", None),
-            performer=kwargs.get("performer"),
+            title=(
+                kwargs.get("title")
+                or getattr(audio, "title", None)
+                or getattr(audio, "file_name", None)
+            ),
+            performer=(
+                kwargs.get("performer")
+                or getattr(audio, "performer", None)
+            ),
             duration=getattr(audio, "duration", None) or kwargs.get("duration"),
         )
         return sent

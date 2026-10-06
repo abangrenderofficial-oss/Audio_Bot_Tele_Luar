@@ -250,3 +250,174 @@ async def store_cached_social_audio(
         timeout_seconds=5.0,
     )
     return bool(data and data.get("ok"))
+
+
+async def get_remote_music_group_connected(group_id: int) -> bool | None:
+    data = await _call(
+        {"action": "group_connected_get", "group_id": int(group_id)}
+    )
+    if not data or "connected" not in data:
+        return None
+    return bool(data.get("connected"))
+
+
+async def set_remote_music_group_connected(
+    group_id: int,
+    *,
+    connected: bool,
+    connected_by_user_id: int | None = None,
+) -> bool:
+    data = await _call(
+        {
+            "action": "group_connected_set",
+            "group_id": int(group_id),
+            "connected": bool(connected),
+            "connected_by_user_id": (
+                int(connected_by_user_id)
+                if connected_by_user_id is not None
+                else None
+            ),
+        },
+        timeout_seconds=5.0,
+    )
+    return bool(data and data.get("ok"))
+
+
+async def add_remote_music_group_track(
+    *,
+    group_id: int,
+    added_by_user_id: int | None,
+    service: str,
+    source_url: str,
+    title: str | None,
+    performer: str | None,
+    telegram_file_id: str,
+    duration_seconds: float | None,
+    source_message_id: int | None,
+    audio_message_id: int,
+) -> dict[str, Any] | None:
+    data = await _call(
+        {
+            "action": "group_track_add",
+            "group_id": int(group_id),
+            "added_by_user_id": (
+                int(added_by_user_id) if added_by_user_id is not None else None
+            ),
+            "service": str(service or "unknown"),
+            "source_url": str(source_url or ""),
+            "title": str(title) if title else None,
+            "performer": str(performer) if performer else None,
+            "telegram_file_id": str(telegram_file_id),
+            "duration_seconds": (
+                float(duration_seconds) if duration_seconds is not None else None
+            ),
+            "source_message_id": (
+                int(source_message_id) if source_message_id is not None else None
+            ),
+            "audio_message_id": int(audio_message_id),
+        },
+        timeout_seconds=5.0,
+    )
+    item = data.get("item") if data and data.get("ok") else None
+    return dict(item) if isinstance(item, dict) else None
+
+
+async def list_remote_music_group_tracks(
+    group_id: int,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]] | None:
+    payload: dict[str, Any] = {
+        "action": "group_tracks_list",
+        "group_id": int(group_id),
+    }
+    if limit is not None:
+        payload["limit"] = max(1, min(int(limit), 500))
+    data = await _call(payload, timeout_seconds=4.0)
+    if not data or not isinstance(data.get("items"), list):
+        return None
+    return [dict(item) for item in data["items"] if isinstance(item, dict)]
+
+
+async def search_remote_music_group_tracks(
+    group_id: int,
+    query: str,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]] | None:
+    data = await _call(
+        {
+            "action": "group_tracks_search",
+            "group_id": int(group_id),
+            "query": str(query or ""),
+            "result_limit": max(1, min(int(limit), 25)),
+            "limit": 500,
+        },
+        timeout_seconds=4.0,
+    )
+    if not data or not isinstance(data.get("items"), list):
+        return None
+    return [dict(item) for item in data["items"] if isinstance(item, dict)]
+
+
+async def find_remote_music_group_track_by_source(
+    group_id: int,
+    source_url: str,
+) -> dict[str, Any] | None:
+    data = await _call(
+        {
+            "action": "group_track_find_source",
+            "group_id": int(group_id),
+            "source_url": str(source_url or ""),
+        },
+        timeout_seconds=3.0,
+    )
+    item = data.get("item") if data and data.get("hit") else None
+    return dict(item) if isinstance(item, dict) else None
+
+
+async def get_remote_music_group_source_message_ids(
+    group_id: int,
+) -> list[int] | None:
+    data = await _call(
+        {"action": "group_source_messages", "group_id": int(group_id)},
+        timeout_seconds=4.0,
+    )
+    values = data.get("message_ids") if data else None
+    if not isinstance(values, list):
+        return None
+    result: list[int] = []
+    for value in values:
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(result))
+
+
+async def clear_remote_music_group_links(
+    group_id: int,
+    message_ids: list[int],
+) -> bool:
+    data = await _call(
+        {
+            "action": "group_links_clear",
+            "group_id": int(group_id),
+            "message_ids": [int(value) for value in message_ids],
+        },
+        timeout_seconds=5.0,
+    )
+    return bool(data and data.get("ok"))
+
+
+async def get_remote_music_group_track_count(group_id: int) -> int | None:
+    data = await _call(
+        {"action": "group_track_count", "group_id": int(group_id)},
+        timeout_seconds=3.0,
+    )
+    if not data or "count" not in data:
+        return None
+    try:
+        return max(0, int(data.get("count") or 0))
+    except (TypeError, ValueError):
+        return None

@@ -102,6 +102,51 @@ async def connect_music_group(message: types.Message) -> None:
     )
 
 
+@router.message(Command("playlist"))
+async def show_group_playlist(message: types.Message) -> None:
+    if not await _require_group(message):
+        return
+    if not await _connected(message):
+        await message.reply("Music Group belum connected. Guna /connectmusic dulu.")
+        return
+
+    total = await db.get_music_group_track_count(message.chat.id)
+    tracks = list(
+        await db.list_music_group_tracks(
+            message.chat.id,
+            limit=30,
+        )
+    )
+    if not tracks:
+        await message.reply(
+            "🎵 Playlist group masih kosong. Hantar link lagu dulu dan bot akan kumpulkan."
+        )
+        return
+
+    lines = [
+        "🎵 <b>Group Playlist</b>",
+        f"<b>{total}</b> track • paling awal → paling baru",
+        "",
+    ]
+    for index, track in enumerate(tracks, start=1):
+        title = html.escape(str(getattr(track, "title", None) or "Audio"))
+        performer = html.escape(
+            str(getattr(track, "performer", None) or "")
+        )
+        label = f"{index}. <b>{title}</b>"
+        if performer:
+            label += f" — {performer}"
+        lines.append(label)
+
+    if total > len(tracks):
+        lines.append(f"\n… dan <b>{total - len(tracks)}</b> track lagi.")
+
+    lines.append(
+        "\n▶️ /playall — hantar queue ke native Telegram music player."
+    )
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(Command("clearlink"))
 async def clear_music_links(message: types.Message) -> None:
     if not await _require_group(message):
