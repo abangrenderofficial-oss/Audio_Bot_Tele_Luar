@@ -15,8 +15,9 @@ class DummyMessage:
 
 
 @pytest.mark.asyncio
-async def test_clearall_removes_tracked_text_commands_and_links_but_preserves_audio(monkeypatch):
+async def test_clearall_sweeps_untracked_text_and_preserves_playlist_audio(monkeypatch):
     message = DummyMessage()
+    message.message_id = 220
     fake_db = SimpleNamespace(
         is_music_group_connected=AsyncMock(return_value=True),
         list_music_group_tracks=AsyncMock(
@@ -30,10 +31,15 @@ async def test_clearall_removes_tracked_text_commands_and_links_but_preserves_au
         mark_music_group_links_cleared=AsyncMock(),
         remove_music_group_cleanup_messages=AsyncMock(),
     )
-    fake_bot = SimpleNamespace(delete_message=AsyncMock())
+    fake_bot = SimpleNamespace(
+        delete_messages=AsyncMock(return_value=True),
+        delete_message=AsyncMock(),
+    )
 
     monkeypatch.setattr(group_music, "db", fake_db)
     monkeypatch.setattr(group_music, "bot", fake_bot)
+    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_LIMIT", 20)
+    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_MARGIN", 3)
     monkeypatch.setattr(
         group_music,
         "_require_group_admin",
@@ -44,11 +50,17 @@ async def test_clearall_removes_tracked_text_commands_and_links_but_preserves_au
     await group_music.clear_all_group_text(message)
 
     deleted_ids = {
-        call.args[1] for call in fake_bot.delete_message.await_args_list
+        message_id
+        for call in fake_bot.delete_messages.await_args_list
+        for message_id in call.kwargs["message_ids"]
     }
-    assert deleted_ids == {101, 102, 103, 104}
+    # Explicit tracked/source ids survive deploy gaps and the range sweep also
+    # catches untracked bot errors/text between the song audios and /clearall.
+    assert {101, 102, 103}.issubset(deleted_ids)
+    assert set(range(202, 221)).issubset(deleted_ids)
     assert 200 not in deleted_ids
     assert 201 not in deleted_ids
+    fake_bot.delete_message.assert_not_awaited()
 
     fake_db.mark_music_group_links_cleared.assert_awaited_once_with(
         message.chat.id,

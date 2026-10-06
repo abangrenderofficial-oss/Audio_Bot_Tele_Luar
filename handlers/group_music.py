@@ -18,6 +18,9 @@ logging = logging.bind(service="group_music")
 router = Router(name=__name__)
 
 _GROUP_TYPES = {"group", "supergroup"}
+_CLEARALL_SWEEP_LIMIT = 1500
+_CLEARALL_SWEEP_MARGIN = 250
+_DELETE_BATCH_SIZE = 100
 
 
 def _is_group(message: types.Message) -> bool:
@@ -233,6 +236,52 @@ async def clear_music_links(message: types.Message) -> None:
     await _reply_tracked(message, text, parse_mode="HTML")
 
 
+async def _delete_group_messages(
+    chat_id: int,
+    message_ids: Iterable[int],
+) -> tuple[set[int], set[int]]:
+    ids = sorted({int(value) for value in message_ids if int(value) > 0})
+    if not ids:
+        return set(), set()
+
+    deleted: set[int] = set()
+    failed: set[int] = set()
+    bulk_delete = getattr(bot, "delete_messages", None)
+
+    if callable(bulk_delete):
+        for start in range(0, len(ids), _DELETE_BATCH_SIZE):
+            batch = ids[start : start + _DELETE_BATCH_SIZE]
+            try:
+                await bulk_delete(chat_id=chat_id, message_ids=batch)
+                deleted.update(batch)
+            except Exception as exc:
+                logging.debug(
+                    "Clearall bulk delete failed: group=%s first=%s last=%s error=%s",
+                    chat_id,
+                    batch[0],
+                    batch[-1],
+                    exc,
+                )
+                for message_id in batch:
+                    try:
+                        await bot.delete_message(chat_id, message_id)
+                        deleted.add(message_id)
+                    except Exception:
+                        failed.add(message_id)
+                    await asyncio.sleep(0.02)
+            await asyncio.sleep(0.04)
+        return deleted, failed
+
+    for message_id in ids:
+        try:
+            await bot.delete_message(chat_id, message_id)
+            deleted.add(message_id)
+        except Exception:
+            failed.add(message_id)
+        await asyncio.sleep(0.02)
+    return deleted, failed
+
+
 @router.message(Command("clearall"))
 async def clear_all_group_text(message: types.Message) -> None:
     if not await _require_group(message):
@@ -261,24 +310,38 @@ async def clear_all_group_text(message: types.Message) -> None:
         else []
     )
     source_ids = set(await db.get_music_group_source_message_ids(message.chat.id))
-    target_ids = tracked_ids | source_ids | {int(message.message_id)}
+    current_message_id = int(message.message_id)
+
+    # Render free restarts wipe the in-memory cleanup ledger, so /clearall
+    # cannot rely on tracked ids alone. Sweep the recent message-id range and
+    # explicitly preserve every song-audio message stored in the persistent
+    # Music Group playlist. This catches bot text, commands, link previews,
+    # failed-link replies and ordinary group text even after a redeploy.
+    known_ids = (
+        set(audio_message_ids)
+        | set(source_ids)
+        | set(tracked_ids)
+        | {current_message_id}
+    )
+    earliest_known = min(known_ids) if known_ids else current_message_id
+    sweep_floor = max(
+        1,
+        max(
+            current_message_id - _CLEARALL_SWEEP_LIMIT,
+            earliest_known - _CLEARALL_SWEEP_MARGIN,
+        ),
+    )
+    sweep_ids = set(range(sweep_floor, current_message_id + 1))
+
+    # Explicit ids are still included when they fall just outside the sweep.
+    # Known audio ids are never sent to Telegram's delete API.
+    target_ids = sweep_ids | tracked_ids | source_ids | {current_message_id}
     target_ids.difference_update(audio_message_ids)
 
-    deleted: list[int] = []
-    failed: list[int] = []
-    for message_id in sorted(target_ids, reverse=True):
-        try:
-            await bot.delete_message(message.chat.id, message_id)
-            deleted.append(message_id)
-        except Exception as exc:
-            failed.append(message_id)
-            logging.debug(
-                "Clearall delete failed: group=%s message=%s error=%s",
-                message.chat.id,
-                message_id,
-                exc,
-            )
-        await asyncio.sleep(0.03)
+    deleted, failed = await _delete_group_messages(
+        message.chat.id,
+        target_ids,
+    )
 
     deleted_source_ids = sorted(source_ids.intersection(deleted))
     if deleted_source_ids:
@@ -289,11 +352,14 @@ async def clear_all_group_text(message: types.Message) -> None:
 
     cleanup_remover = getattr(db, "remove_music_group_cleanup_messages", None)
     if callable(cleanup_remover) and deleted:
-        await cleanup_remover(message.chat.id, deleted)
+        await cleanup_remover(message.chat.id, sorted(deleted))
 
     logging.info(
-        "Group clearall complete: group=%s deleted=%s failed=%s audio_preserved=%s",
+        "Group clearall complete: group=%s sweep=%s-%s deleted=%s failed=%s "
+        "audio_preserved=%s",
         message.chat.id,
+        sweep_floor,
+        current_message_id,
         len(deleted),
         len(failed),
         len(audio_message_ids),
