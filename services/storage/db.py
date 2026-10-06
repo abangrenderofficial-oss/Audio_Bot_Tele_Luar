@@ -7,6 +7,7 @@ from services.logger import logger as logging
 from services.storage.analytics_repository import AnalyticsRepositoryMixin
 from services.storage.database_url import to_async_database_url, to_sync_database_url
 from services.storage.download_history_repository import DownloadHistoryRepositoryMixin
+from services.storage.music_group_repository import MusicGroupRepositoryMixin
 from services.storage.file_cache_repository import FileCacheRepositoryMixin
 from services.storage.local_cache import LocalCacheMixin
 from services.storage.models import (
@@ -18,6 +19,8 @@ from services.storage.models import (
     DownloadHistory,
     Group,
     GroupMember,
+    MusicGroupSettings,
+    MusicGroupTrack,
     Settings,
     StatsSnapshot,
     User,
@@ -46,6 +49,8 @@ __all__ = [
     "DownloadHistory",
     "Group",
     "GroupMember",
+    "MusicGroupSettings",
+    "MusicGroupTrack",
     "Settings",
     "StatsSnapshot",
     "User",
@@ -110,6 +115,7 @@ class DataBase(
     FileCacheRepositoryMixin,
     AnalyticsRepositoryMixin,
     DownloadHistoryRepositoryMixin,
+    MusicGroupRepositoryMixin,
 ):
     def __init__(self, database_url: str | None = None):
         self.database_url = database_url or DATABASE_URL
