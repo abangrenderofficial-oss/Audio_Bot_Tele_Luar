@@ -357,8 +357,8 @@ class YouTubeMediaService:
             logging.error("Error fetching YouTube info: %s", exc)
             return None
 
-    def search_youtube_track(self, query: str) -> Optional[dict[str, Any]]:
-        """Resolve the best YouTube candidate for a track metadata query."""
+    def search_youtube_track_fast(self, query: str) -> Optional[dict[str, Any]]:
+        """Resolve one YouTube candidate without opening the video a second time."""
         if not query.strip():
             return None
         try:
@@ -373,16 +373,31 @@ class YouTubeMediaService:
             entries = (search or {}).get("entries") or []
             if not entries:
                 return None
-            candidate = entries[0] or {}
+            candidate = dict(entries[0] or {})
             candidate_url = candidate.get("webpage_url") or candidate.get("url")
             if not candidate_url and candidate.get("id"):
                 candidate_url = f"https://www.youtube.com/watch?v={candidate['id']}"
             if not candidate_url:
                 return None
-            return self.get_youtube_video(str(candidate_url))
+            candidate["webpage_url"] = str(candidate_url)
+            return candidate
         except Exception as exc:
-            logging.error("YouTube track search failed: query=%s error=%s", query, exc)
+            logging.error(
+                "Fast YouTube track search failed: query=%s error=%s",
+                query,
+                exc,
+            )
             return None
+
+    def search_youtube_track(self, query: str) -> Optional[dict[str, Any]]:
+        """Resolve the best YouTube candidate and fetch its full metadata."""
+        candidate = self.search_youtube_track_fast(query)
+        if not candidate:
+            return None
+        candidate_url = candidate.get("webpage_url")
+        if not candidate_url:
+            return None
+        return self.get_youtube_video(str(candidate_url))
 
     async def download_stream(
         self,
