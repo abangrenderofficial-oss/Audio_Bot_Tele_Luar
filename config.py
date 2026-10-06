@@ -210,6 +210,9 @@ MAX_FILE_SIZE = _read_int_env("MAX_FILE_SIZE") or int(1.5 * 1024 * 1024 * 1024)
 BOT_COMMANDS = [
     {"command": "start", "description": "Start MP3 Music Bot"},
     {"command": "help", "description": "Supported music links and tips"},
+    {"command": "search", "description": "Cari lagu"},
+    {"command": "playall", "description": "Hantar semua lagu private dari awal"},
+    {"command": "clearall", "description": "Bersihkan chat dan kekalkan audio sahaja"},
 ]
 
 GROUP_MUSIC_COMMANDS = [
