@@ -4673,33 +4673,39 @@ function usesRemoteSessionServer() {
 server.listen(PORT, HOST, () => {
   console.log(`[POT-ADAPTER] ready at http://${HOST}:${PORT}`);
 
-  // TEMP diagnostic: validate the exact Threads /share/ URL end-to-end on
-  // Render without depending on Telegram or the bot service rollout.
-  setTimeout(async () => {
-    let testFile = null;
-    try {
-      const result = await runSocialWorkerAudio(
-        "https://www.threads.com/share/BAV6glx_i6/",
-        "threads"
-      );
-      testFile = result?.filePath || null;
-      const size = testFile && fs.existsSync(testFile)
-        ? fs.statSync(testFile).size
-        : 0;
-      console.log(
-        `[THREADS-SHARE-SELFTEST] PASS bytes=${size} title=${String(result?.metadata?.title || "").slice(0, 120)}`
-      );
-    } catch (error) {
-      console.error(
-        "[THREADS-SHARE-SELFTEST] FAIL:",
-        String(error?.message || error).slice(0, 1500)
-      );
-    } finally {
-      if (testFile) {
-        try { fs.rmSync(testFile, { force: true }); } catch {}
+  const threadsSelftestEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.THREADS_SHARE_SELFTEST || "").trim().toLowerCase()
+  );
+  if (threadsSelftestEnabled) {
+    const threadsSelftestUrl =
+      String(process.env.THREADS_SHARE_SELFTEST_URL || "").trim() ||
+      "https://www.threads.com/share/InQUBOY9S/";
+    setTimeout(async () => {
+      let testFile = null;
+      try {
+        const result = await runSocialWorkerAudio(
+          threadsSelftestUrl,
+          "threads"
+        );
+        testFile = result?.filePath || null;
+        const size = testFile && fs.existsSync(testFile)
+          ? fs.statSync(testFile).size
+          : 0;
+        console.log(
+          `[THREADS-SHARE-SELFTEST] PASS bytes=${size} title=${String(result?.metadata?.title || "").slice(0, 120)}`
+        );
+      } catch (error) {
+        console.error(
+          "[THREADS-SHARE-SELFTEST] FAIL:",
+          String(error?.message || error).slice(0, 1500)
+        );
+      } finally {
+        if (testFile) {
+          try { fs.rmSync(testFile, { force: true }); } catch {}
+        }
       }
-    }
-  }, 1500).unref?.();
+    }, 1500).unref?.();
+  }
 
   if (usesRemoteSessionServer()) {
     const timer = setTimeout(() => {
