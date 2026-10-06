@@ -41,6 +41,7 @@ from services.inline.album_links import create_inline_album_request
 from services.links.detection import extract_supported_link
 from services.logger import logger as logging, summarize_url_for_log
 from services.media.audio_metadata import build_audio_filename, prepare_mp3_metadata
+from services.music_group_dedupe import duplicate_keeper_message_id
 from services.media.delivery import send_audio_with_thumbnail
 from services.storage.music_cache import (
     get_cached_audio,
@@ -246,12 +247,10 @@ async def _resolve_threads_music_source(source_url: str) -> str:
 def _social_audio_caption(
     service_name: str,
     title: str,
-    quality_label: str,
+    _quality_label: str,
 ) -> str:
-    escaped_title = html.escape(title)
-    if service_name in {"threads", "twitter", "tiktok"}:
-        return f"🎵 {escaped_title}"
-    return f"🎵 {escaped_title}\n{html.escape(quality_label)}"
+    del service_name
+    return f"🎵 {html.escape(title)}"
 
 
 async def _enforce_worker_title_only_caption(
@@ -262,7 +261,7 @@ async def _enforce_worker_title_only_caption(
     title: str,
     business_connection_id: str | None,
 ) -> None:
-    if service_name not in {"threads", "twitter", "tiktok"} or message_id is None:
+    if service_name not in {"threads", "twitter", "tiktok", "instagram"} or message_id is None:
         return
 
     kwargs = {
@@ -499,6 +498,63 @@ async def process_music_link(
     ) -> None:
         if not group_music_connected or not file_id or audio_message_id is None:
             return
+
+        candidate_message_id = int(audio_message_id)
+
+        async def _drop_if_duplicate() -> bool:
+            try:
+                raw_lister = getattr(db, "list_music_group_tracks_raw", None)
+                if callable(raw_lister):
+                    tracks = list(await raw_lister(message.chat.id))
+                else:
+                    tracks = list(await db.list_music_group_tracks(message.chat.id))
+                keeper_id = duplicate_keeper_message_id(
+                    tracks,
+                    candidate_audio_message_id=candidate_message_id,
+                    service=service_name,
+                    source_url=source_url,
+                    title=title,
+                    performer=performer,
+                    telegram_file_id=file_id,
+                )
+            except Exception as exc:
+                logging.debug(
+                    "Group duplicate check failed: group=%s source=%s error=%s",
+                    message.chat.id,
+                    service_name,
+                    exc,
+                )
+                return False
+
+            if keeper_id == candidate_message_id:
+                return False
+
+            for stale_message_id in (
+                candidate_message_id,
+                getattr(message, "message_id", None),
+            ):
+                if stale_message_id is None:
+                    continue
+                try:
+                    await bot.delete_message(
+                        message.chat.id,
+                        int(stale_message_id),
+                    )
+                except Exception:
+                    pass
+            logging.info(
+                "Group duplicate audio removed: group=%s source=%s "
+                "removed=%s keeper=%s",
+                message.chat.id,
+                service_name,
+                candidate_message_id,
+                keeper_id,
+            )
+            return True
+
+        if await _drop_if_duplicate():
+            return
+
         try:
             parsed_duration = float(duration) if duration is not None else None
         except (TypeError, ValueError):
@@ -516,8 +572,9 @@ async def process_music_link(
                 telegram_file_id=str(file_id),
                 duration_seconds=parsed_duration,
                 source_message_id=message.message_id,
-                audio_message_id=int(audio_message_id),
+                audio_message_id=candidate_message_id,
             )
+            await _drop_if_duplicate()
         except Exception as exc:
             logging.warning(
                 "Group playlist record failed: group=%s source=%s error=%s",
