@@ -806,12 +806,11 @@ async def resolve_threads_share_via_crawlers(url: str) -> str | None:
 
 
 def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
-    """Resolve /share/<id>/ using Chromium's real browser navigation.
+    """Resolve /share/<id>/ with a real Chromium navigation.
 
-    The plain HTTP page can be only a login shell on server IPs. A real browser
-    can still perform Threads' client-side navigation. Use the main Render
-    service's direct network path here; only the separate Oregon worker runs
-    the WARP SOCKS proxy. Read the active tab URL from Chrome DevTools.
+    Meta can serve different results depending on the HTTP/TLS/browser path.
+    Try Render's direct egress first (closest to a normal browser request), then
+    fall back to the local WARP SOCKS tunnel. This stays entirely inside Render.
     """
     binary = (
         shutil.which("chromium")
@@ -823,103 +822,135 @@ def _resolve_threads_share_with_chromium_sync(url: str) -> str | None:
         logging.warning("Threads Chromium fallback unavailable: browser binary not found")
         return None
 
-    profile_dir = tempfile.mkdtemp(prefix="threads-share-chrome-")
-    process: subprocess.Popen | None = None
-    try:
-        command = [
-            binary,
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-            "--disable-default-apps",
-            "--disable-extensions",
-            "--disable-sync",
-            "--no-first-run",
-            "--incognito",
-            "--disable-blink-features=AutomationControlled",
-            # FxThreads resolves /share/ with a normal headless browser. Do not
-            # force the local WARP SOCKS port here: the main Render bot does not
-            # run wireproxy, so that made Chromium sit on the share URL forever.
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=0",
-            f"--user-data-dir={profile_dir}",
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-            url,
-        ]
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+    attempts: list[tuple[str, str | None]] = [
+        ("direct", None),
+        ("warp", "socks5://127.0.0.1:1080"),
+    ]
 
-        port_file = os.path.join(profile_dir, "DevToolsActivePort")
-        port: int | None = None
-        startup_deadline = time.monotonic() + 6.0
-        while time.monotonic() < startup_deadline:
-            if process.poll() is not None:
-                break
-            try:
-                with open(port_file, "r", encoding="utf-8") as handle:
-                    first_line = handle.readline().strip()
-                if first_line.isdigit():
-                    port = int(first_line)
-                    break
-            except (FileNotFoundError, OSError):
-                pass
-            time.sleep(0.1)
+    for mode, proxy_url in attempts:
+        profile_dir = tempfile.mkdtemp(prefix=f"threads-share-chrome-{mode}-")
+        process: subprocess.Popen | None = None
+        try:
+            command = [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--lang=en-US",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={profile_dir}",
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            ]
+            if proxy_url:
+                command.append(f"--proxy-server={proxy_url}")
+            else:
+                command.append("--no-proxy-server")
+            command.append(url)
 
-        if not port:
-            logging.warning(
-                "Threads Chromium fallback could not open DevTools: rc=%s",
-                process.poll(),
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
-            return None
 
-        last_url = url
-        navigation_deadline = time.monotonic() + 12.0
-        endpoint = f"http://127.0.0.1:{port}/json"
-        while time.monotonic() < navigation_deadline:
-            if process.poll() is not None:
-                break
-            try:
-                with urllib.request.urlopen(endpoint, timeout=1.0) as response:
-                    targets = json.loads(response.read().decode("utf-8", errors="replace"))
-                if isinstance(targets, list):
-                    for target in targets:
-                        if not isinstance(target, dict) or target.get("type") != "page":
-                            continue
-                        current_url = str(target.get("url") or "").strip()
-                        if current_url:
-                            last_url = current_url
-                        resolved = strip_threads_url(current_url)
-                        if extract_threads_post_code(resolved):
-                            return resolved
-            except Exception:
-                pass
-            time.sleep(0.25)
-
-        logging.warning(
-            "Threads Chromium fallback did not navigate to canonical post: final=%s",
-            last_url[:300],
-        )
-        return None
-    except (OSError, subprocess.SubprocessError) as exc:
-        logging.warning("Threads Chromium fallback failed to run: error=%s", exc)
-        return None
-    finally:
-        if process is not None and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=2)
-            except Exception:
+            port_file = os.path.join(profile_dir, "DevToolsActivePort")
+            port: int | None = None
+            startup_deadline = time.monotonic() + 7.0
+            while time.monotonic() < startup_deadline:
+                if process.poll() is not None:
+                    break
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    with open(port_file, "r", encoding="utf-8") as handle:
+                        first_line = handle.readline().strip()
+                    if first_line.isdigit():
+                        port = int(first_line)
+                        break
+                except (FileNotFoundError, OSError):
+                    pass
+                time.sleep(0.1)
+
+            if not port:
+                logging.warning(
+                    "Threads Chromium resolver could not open DevTools: mode=%s rc=%s",
+                    mode,
+                    process.poll(),
+                )
+                continue
+
+            last_url = url
+            last_title = "-"
+            navigation_deadline = time.monotonic() + 15.0
+            endpoint = f"http://127.0.0.1:{port}/json"
+            while time.monotonic() < navigation_deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen(endpoint, timeout=1.0) as response:
+                        targets = json.loads(
+                            response.read().decode("utf-8", errors="replace")
+                        )
+                    if isinstance(targets, list):
+                        for target in targets:
+                            if (
+                                not isinstance(target, dict)
+                                or target.get("type") != "page"
+                            ):
+                                continue
+                            current_url = str(target.get("url") or "").strip()
+                            current_title = str(target.get("title") or "").strip()
+                            if current_url:
+                                last_url = current_url
+                            if current_title:
+                                last_title = current_title
+                            resolved = strip_threads_url(current_url)
+                            if extract_threads_post_code(resolved):
+                                logging.info(
+                                    "Resolved Threads share URL via Chromium: "
+                                    "mode=%s %s -> %s",
+                                    mode,
+                                    url,
+                                    resolved,
+                                )
+                                return resolved
                 except Exception:
                     pass
-        shutil.rmtree(profile_dir, ignore_errors=True)
+                time.sleep(0.25)
+
+            logging.warning(
+                "Threads Chromium resolver did not navigate to canonical post: "
+                "mode=%s final=%s title=%s",
+                mode,
+                last_url[:300],
+                last_title[:160],
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logging.warning(
+                "Threads Chromium resolver failed to run: mode=%s error=%s",
+                mode,
+                exc,
+            )
+        finally:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=2)
+                except Exception:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+    return None
 
 
 async def fetch_fxthreads_canonical(share_id: str) -> str | None:
