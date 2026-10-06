@@ -40,7 +40,7 @@ def youtube_video_id(url: str) -> str | None:
 def social_media_key(source: str, url: str) -> str | None:
     source = str(source or "").strip().lower()
     raw = str(url or "").strip()
-    if source not in {"tiktok", "instagram", "threads", "twitter", "spotify"} or not raw:
+    if source not in {"tiktok", "instagram", "threads", "twitter", "spotify", "soundcloud"} or not raw:
         return None
 
     try:
