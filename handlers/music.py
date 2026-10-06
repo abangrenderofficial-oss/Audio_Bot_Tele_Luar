@@ -223,6 +223,19 @@ async def redirect_music_inline_to_private(query: types.InlineQuery) -> None:
 def _friendly_music_error(exc: Exception) -> str:
     raw = str(exc)
     lower = raw.lower()
+    if "threads_share_unavailable" in lower:
+        return (
+            "Link Threads ni dah tak dapat dibuka. Kemungkinan share link dah "
+            "tak valid, post dah dipadam/private, atau Threads dah tamatkan "
+            "share link itu. Cuba Copy Link semula dari post Threads yang masih "
+            "public dan hantar link baru."
+        )
+    if "threads_share_unresolved" in lower:
+        return (
+            "Bot tak dapat buka share link Threads ini. Cuba buka post itu di "
+            "Threads, tekan Share > Copy Link sekali lagi dan hantar link baru. "
+            "Kalau boleh, hantar direct link @username/post/... ."
+        )
     if "live_stream_not_supported" in lower:
         return "Live stream belum disokong. Hantar link video yang sudah siap/published."
     if (
@@ -740,9 +753,9 @@ async def process_music_link(
                     )
                 except Exception as exc:
                     social_error = exc
+                    error_text = str(exc)
                     logging.warning(
                         "Social Fast Audio direct path failed; "
-                        "falling back to legacy MP3 pipeline: "
                         "source=%s error=%s",
                         service_name,
                         exc,
@@ -752,8 +765,21 @@ async def process_music_link(
                         and not shared_social_future.done()
                     ):
                         shared_social_future.set_result(
-                            {"ok": False, "error": str(exc)}
+                            {"ok": False, "error": error_text}
                         )
+
+                    # Threads /share/ aliases that are explicitly unavailable or
+                    # cannot be resolved should not enter the old metadata +
+                    # conversion pipeline. That only repeats the same request
+                    # for another minute before failing. Reply immediately.
+                    if (
+                        service_name == "threads"
+                        and (
+                            "THREADS_SHARE_UNAVAILABLE" in error_text
+                            or "THREADS_SHARE_UNRESOLVED" in error_text
+                        )
+                    ):
+                        raise MusicDownloadError(error_text) from exc
                 else:
                     social_title = str(
                         social_result.get("title") or "Audio"
