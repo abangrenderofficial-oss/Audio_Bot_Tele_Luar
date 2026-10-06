@@ -39,6 +39,7 @@ APP_SCHEMA_TABLES = frozenset(
         "group_members",
         "music_group_settings",
         "music_group_tracks",
+        "music_group_cleanup_messages",
         "download_history",
     }
 )
@@ -172,6 +173,37 @@ class MusicGroupTrack(Base):
     duration_seconds = Column(sa.Float, nullable=True)
     source_message_id = Column(BigInteger, nullable=True)
     audio_message_id = Column(BigInteger, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class MusicGroupCleanupMessage(Base):
+    __tablename__ = "music_group_cleanup_messages"
+    __table_args__ = (
+        Index(
+            "ix_music_group_cleanup_group_created",
+            "group_id",
+            "created_at",
+        ),
+        UniqueConstraint(
+            "group_id",
+            "message_id",
+            name="uq_music_group_cleanup_group_message",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    group_id = Column(
+        BigInteger,
+        ForeignKey("groups.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id = Column(BigInteger, nullable=False)
+    kind = Column(
+        Text,
+        nullable=False,
+        default="bot_text",
+        server_default=sa.text("'bot_text'"),
+    )
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 

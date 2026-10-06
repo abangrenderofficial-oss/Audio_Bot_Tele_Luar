@@ -43,6 +43,7 @@ class MemoryDataBase:
         self._history: list[SimpleNamespace] = []
         self._music_groups: dict[int, dict[str, Any]] = {}
         self._music_tracks: dict[int, list[SimpleNamespace]] = {}
+        self._music_cleanup_messages: dict[int, dict[int, str]] = {}
 
     async def init_db(self) -> None:
         return None
@@ -380,6 +381,33 @@ class MemoryDataBase:
             await clear_remote_music_group_links(gid, sorted(ids))
         except Exception:
             pass
+
+    async def add_music_group_cleanup_message(
+        self,
+        *,
+        group_id: int,
+        message_id: int,
+        kind: str,
+    ) -> None:
+        gid = int(group_id)
+        self._music_cleanup_messages.setdefault(gid, {})[int(message_id)] = str(
+            kind or "bot_text"
+        )
+
+    async def get_music_group_cleanup_message_ids(
+        self,
+        group_id: int,
+    ) -> list[int]:
+        return sorted(self._music_cleanup_messages.get(int(group_id), {}))
+
+    async def remove_music_group_cleanup_messages(
+        self,
+        group_id: int,
+        message_ids,
+    ) -> None:
+        rows = self._music_cleanup_messages.get(int(group_id), {})
+        for message_id in message_ids:
+            rows.pop(int(message_id), None)
 
     async def get_music_group_track_count(self, group_id: int) -> int:
         gid = int(group_id)
