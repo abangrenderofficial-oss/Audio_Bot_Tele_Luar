@@ -1729,7 +1729,9 @@ async function probeDlpandaThreadsAssets(mediaUrl) {
     });
     const html = await response.text();
 
-    const formMatch = html.match(/<form[^>]*data-download-form[^>]*>[\\s\\S]*?<\\/form>/i);
+    const formMatch = html.match(
+      new RegExp("<form[^>]*data-download-form[^>]*>[\\\\s\\\\S]*?</form>", "i")
+    );
     if (formMatch) {
       const formHtml = formMatch[0];
       const tag = (formHtml.match(/^<form[^>]*>/i) || [""])[0];
