@@ -251,11 +251,7 @@ def _start_pot_provider() -> subprocess.Popen | None:
 
 
 def main() -> None:
-    health = (
-        None
-        if _webhook_mode_enabled()
-        else subprocess.Popen([sys.executable, "/app/health_server.py"])
-    )
+    health = subprocess.Popen([sys.executable, "/app/health_server.py"])
     xvfb = _start_xvfb() if _env_truthy("YOUTUBE_BROWSER_WPC_ENABLED") else None
     if xvfb is None:
         print("[WPC] browser provider disabled for low-memory runtime", flush=True)
@@ -271,7 +267,7 @@ def main() -> None:
             xvfb.terminate()
         if warp_proxy is not None and warp_proxy.poll() is None:
             warp_proxy.terminate()
-        if health is not None and health.poll() is None:
+        if health.poll() is None:
             health.terminate()
 
 
