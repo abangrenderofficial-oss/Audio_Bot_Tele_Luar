@@ -180,6 +180,24 @@ async def resolve_threads_share_via_head(url: str) -> str | None:
     return None
 
 
+def _extract_threads_lsd_token(page: str) -> str | None:
+    """Recover the current anonymous LSD token embedded in Threads HTML."""
+    text = unescape(page or "").replace("\\/", "/")
+    patterns = (
+        r'"LSD"\s*,\s*\[\]\s*,\s*\{\s*"token"\s*:\s*"([^"]+)"',
+        r'"token"\s*:\s*"([^"]+)"[^{}]{0,300}"LSD"',
+        r'name=["\']lsd["\'][^>]*value=["\']([^"\']+)["\']',
+        r'value=["\']([^"\']+)["\'][^>]*name=["\']lsd["\']',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            token = match.group(1).strip()
+            if 6 <= len(token) <= 256 and re.fullmatch(r"[A-Za-z0-9._-]+", token):
+                return token
+    return None
+
+
 def _threads_shortcode_from_numeric_id(value: object) -> str | None:
     """Convert Threads' numeric media id back to its URL shortcode."""
     try:
@@ -197,7 +215,11 @@ def _threads_shortcode_from_numeric_id(value: object) -> str | None:
     return "".join(reversed(chars)) or None
 
 
-async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
+async def resolve_threads_share_via_bulk_route(
+    url: str,
+    *,
+    bootstrap_page: str = "",
+) -> str | None:
     """Ask Threads' route-definition endpoint which post a /share/ path targets.
 
     This avoids relying on browser redirects. The endpoint returns a numeric
@@ -211,11 +233,22 @@ async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
         return None
 
     session = await get_http_session()
+    lsd_token = _extract_threads_lsd_token(bootstrap_page)
+    if not lsd_token:
+        # Fall back to the previous anonymous token only when the current shell
+        # does not expose one. A stale token can return a valid-looking route
+        # response that omits the share target.
+        lsd_token = "XudMkvWGqcnLxbgeR25f3V"
+    logging.info(
+        "Threads bulk-route LSD token source=%s len=%s",
+        "page" if _extract_threads_lsd_token(bootstrap_page) else "fallback",
+        len(lsd_token),
+    )
     form = {
         "route_urls[0]": path,
         "__a": "1",
         "__comet_req": "29",
-        "lsd": "XudMkvWGqcnLxbgeR25f3V",
+        "lsd": lsd_token,
     }
     headers = {
         "User-Agent": (
@@ -225,7 +258,7 @@ async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.5",
         "Content-Type": "application/x-www-form-urlencoded",
-        "X-FB-LSD": "XudMkvWGqcnLxbgeR25f3V",
+        "X-FB-LSD": lsd_token,
         "X-ASBD-ID": "129477",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
@@ -331,6 +364,10 @@ async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
                 post_id = value
 
         _scan_route_value(result if result is not None else route_payload)
+        # If Meta moved the redirect target outside the route's result object,
+        # scan the complete response as a schema-change fallback.
+        if post_id is None or canonical_candidate is None:
+            _scan_route_value(payload)
 
         if canonical_candidate and extract_threads_post_code(canonical_candidate):
             logging.info(
@@ -350,11 +387,20 @@ async def resolve_threads_share_via_bulk_route(url: str) -> str | None:
             )
             return resolved
 
+        route_keys = (
+            list(route_payload.keys())[:12]
+            if isinstance(route_payload, dict)
+            else []
+        )
+        result_keys = list(result.keys())[:12] if isinstance(result, dict) else []
         logging.info(
-            "Threads bulk-route resolver had no usable target: origin=%s path=%s payload_keys=%s",
+            "Threads bulk-route resolver had no usable target: origin=%s path=%s "
+            "payload_keys=%s route_keys=%s result_keys=%s",
             origin,
             path,
             list(payloads.keys())[:8] if isinstance(payloads, dict) else [],
+            route_keys,
+            result_keys,
         )
 
     return None
@@ -631,7 +677,10 @@ async def resolve_threads_url(
         logging.info("Resolved Threads share URL via page metadata: %s -> %s", candidate, resolved_page)
         return resolved_page
 
-    bulk_resolved = await resolve_threads_share_via_bulk_route(candidate)
+    bulk_resolved = await resolve_threads_share_via_bulk_route(
+        candidate,
+        bootstrap_page=page,
+    )
     if bulk_resolved:
         return bulk_resolved
 
