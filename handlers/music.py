@@ -50,6 +50,7 @@ from services.storage.music_cache import (
     store_cached_social_audio,
     youtube_video_id,
 )
+from services.platforms.threads_media import resolve_threads_share_fast
 from services.media.music_download import (
     MusicDownloadError,
     MusicDownloadResult,
@@ -134,6 +135,30 @@ async def _release_fast_social_inflight(
     async with _FAST_SOCIAL_INFLIGHT_LOCK:
         if _FAST_SOCIAL_INFLIGHT.get(inflight_key) is future:
             _FAST_SOCIAL_INFLIGHT.pop(inflight_key, None)
+
+
+async def _resolve_threads_music_source(source_url: str) -> str:
+    """Resolve Threads /share/... to the direct post before video extraction."""
+    if "/share/" not in str(source_url):
+        return source_url
+    try:
+        resolved = await resolve_threads_share_fast(source_url)
+    except Exception as exc:
+        logging.warning(
+            "Threads music share resolve failed; worker will try original URL: %s",
+            exc,
+        )
+        return source_url
+
+    resolved = str(resolved or "").strip()
+    if resolved and resolved != source_url:
+        logging.info(
+            "Threads music share resolved: input=%s resolved=%s",
+            summarize_url_for_log(source_url),
+            summarize_url_for_log(resolved),
+        )
+        return resolved
+    return source_url
 
 
 MUSIC_LINK_SERVICES = frozenset(
@@ -285,6 +310,9 @@ async def process_music_link(
         return
 
     service_name, source_url = detected
+
+    if service_name == "threads":
+        source_url = await _resolve_threads_music_source(source_url)
 
     chat_type_value = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
     is_group_music_chat = chat_type_value in {"group", "supergroup"}
@@ -819,8 +847,12 @@ async def process_music_link(
                         await safe_edit_text(
                             status_message,
                             (
-                                f"🎧 {service_name.title()} Fast Audio • "
-                                "sedang sediakan audio..."
+                                "🎬 Threads • ambil video & convert ke audio..."
+                                if service_name == "threads"
+                                else (
+                                    f"🎧 {service_name.title()} Fast Audio • "
+                                    "sedang sediakan audio..."
+                                )
                             ),
                         )
                     await send_chat_action_if_needed(
