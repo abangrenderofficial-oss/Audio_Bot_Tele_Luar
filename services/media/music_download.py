@@ -1407,6 +1407,7 @@ async def send_youtube_fast_to_telegram(
     performer: str | None = None,
     duration: float | None = None,
     business_connection_id: str | None = None,
+    caption_title_only: bool = False,
 ) -> dict[str, Any]:
     base_url = _youtube_worker_base_url()
     api_key = _youtube_worker_auth_token()
@@ -1428,6 +1429,8 @@ async def send_youtube_fast_to_telegram(
         payload["duration"] = float(duration)
     if business_connection_id:
         payload["business_connection_id"] = business_connection_id
+    if caption_title_only:
+        payload["caption_title_only"] = True
 
     started = time.perf_counter()
     async with httpx.AsyncClient(

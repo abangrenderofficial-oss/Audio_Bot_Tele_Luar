@@ -195,6 +195,7 @@ async def test_process_spotify_fast_worker_adds_group_playlist(monkeypatch):
         performer="Ammar Haikal",
         duration=198.0,
         business_connection_id=None,
+        caption_title_only=True,
     )
     spotify.download_mp3_with_ytdlp_metrics.assert_not_awaited()
     spotify.store_cached_social_audio.assert_awaited()

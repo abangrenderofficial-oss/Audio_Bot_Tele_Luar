@@ -354,6 +354,7 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     float(duration) if duration is not None else None
                 ),
                 business_connection_id=business_id,
+                caption_title_only=True,
             )
             logging.info(
                 "Spotify timing: stage=fast_worker seconds=%.2f bytes=%s",
