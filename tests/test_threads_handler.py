@@ -352,3 +352,12 @@ async def test_threads_worker_caption_is_enforced_title_only(monkeypatch):
         caption="🎵 Image Music",
         parse_mode="HTML",
     )
+
+
+
+def test_tiktok_audio_caption_is_title_only():
+    assert music._social_audio_caption(
+        "tiktok",
+        "TikTok Sound",
+        "Original Quality",
+    ) == "🎵 TikTok Sound"
