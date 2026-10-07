@@ -85,43 +85,45 @@ async def clear_all_private_music(message: types.Message) -> None:
         return
 
     raw_tracks = list(await list_private_tracks_raw(user.id))
-    tracks, duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
+    tracks, _duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
 
+    # Private /clearall must never delete music audio. Preserve every recorded
+    # audio message, including any legacy duplicates.
     audio_message_ids = {
         int(track.audio_message_id)
-        for track in tracks
-        if getattr(track, "audio_message_id", None) is not None
-    }
-    duplicate_audio_ids = {
-        int(track.audio_message_id)
-        for track in duplicate_tracks
+        for track in raw_tracks
         if getattr(track, "audio_message_id", None) is not None
     }
     source_ids = set(await get_private_source_message_ids(user.id))
     current_message_id = int(message.message_id)
 
-    known_ids = (
-        set(audio_message_ids)
-        | set(duplicate_audio_ids)
-        | set(source_ids)
-        | {current_message_id}
-    )
-    earliest_known = min(known_ids) if known_ids else current_message_id
-    sweep_floor = max(
-        1,
-        max(
-            current_message_id - _CLEARALL_SWEEP_LIMIT,
-            earliest_known - _CLEARALL_SWEEP_MARGIN,
-        ),
-    )
-
-    target_ids = (
-        set(range(sweep_floor, current_message_id + 1))
-        | source_ids
-        | duplicate_audio_ids
-        | {current_message_id}
-    )
-    target_ids.difference_update(audio_message_ids)
+    if audio_message_ids:
+        # Sweep only inside the reliably tracked private-music window. Older
+        # history may contain audio sent before persistent tracking existed.
+        # Sweeping from message 1 would risk deleting those legacy songs.
+        anchor_ids = set(audio_message_ids) | set(source_ids)
+        earliest_tracked = min(anchor_ids)
+        sweep_floor = max(
+            1,
+            max(
+                current_message_id - _CLEARALL_SWEEP_LIMIT,
+                earliest_tracked,
+            ),
+        )
+        target_ids = (
+            set(range(sweep_floor, current_message_id + 1))
+            | source_ids
+            | {current_message_id}
+        )
+        target_ids.difference_update(audio_message_ids)
+        safe_mode = "tracked-sweep"
+    else:
+        # If there is no audio registry, Bot API gives us no way to inspect an
+        # old message by id before deleting it. Delete only known link/source
+        # messages and this command instead of risking another audio deletion.
+        sweep_floor = current_message_id
+        target_ids = set(source_ids) | {current_message_id}
+        safe_mode = "known-only"
 
     deleted, failed = await delete_private_messages(
         message.chat.id,
@@ -132,15 +134,15 @@ async def clear_all_private_music(message: types.Message) -> None:
         await _clean_private_audio_message(message.chat.id, track)
 
     logging.info(
-        "Private clearall complete: user=%s sweep=%s-%s deleted=%s failed=%s "
-        "audio_preserved=%s duplicates_removed=%s",
+        "Private clearall complete: user=%s mode=%s sweep=%s-%s "
+        "deleted=%s failed=%s audio_preserved=%s",
         user.id,
+        safe_mode,
         sweep_floor,
         current_message_id,
         len(deleted),
         len(failed),
         len(audio_message_ids),
-        len(duplicate_audio_ids.intersection(deleted)),
     )
 
 
