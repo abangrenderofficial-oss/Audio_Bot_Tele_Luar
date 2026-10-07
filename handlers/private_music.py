@@ -85,15 +85,22 @@ async def clear_all_private_music(message: types.Message) -> None:
         return
 
     raw_tracks = list(await list_private_tracks_raw(user.id))
-    tracks, _duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
+    tracks, duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
 
-    # Private /clearall must never delete music audio. Preserve every recorded
-    # audio message, including any legacy duplicates.
+    # Private /clearall must never delete the keeper audio for a song. If the
+    # same audio was sent multiple times, keep the first tracked copy and
+    # delete only the duplicate audio messages.
     audio_message_ids = {
         int(track.audio_message_id)
         for track in raw_tracks
         if getattr(track, "audio_message_id", None) is not None
     }
+    duplicate_audio_ids = {
+        int(track.audio_message_id)
+        for track in duplicate_tracks
+        if getattr(track, "audio_message_id", None) is not None
+    }
+    keeper_audio_ids = audio_message_ids - duplicate_audio_ids
     source_ids = set(await get_private_source_message_ids(user.id))
     current_message_id = int(message.message_id)
 
@@ -113,9 +120,11 @@ async def clear_all_private_music(message: types.Message) -> None:
         target_ids = (
             set(range(sweep_floor, current_message_id + 1))
             | source_ids
+            | duplicate_audio_ids
             | {current_message_id}
         )
-        target_ids.difference_update(audio_message_ids)
+        # Never delete any non-duplicate music audio.
+        target_ids.difference_update(keeper_audio_ids)
         safe_mode = "tracked-sweep"
     else:
         # If there is no audio registry, Bot API gives us no way to inspect an
@@ -135,14 +144,15 @@ async def clear_all_private_music(message: types.Message) -> None:
 
     logging.info(
         "Private clearall complete: user=%s mode=%s sweep=%s-%s "
-        "deleted=%s failed=%s audio_preserved=%s",
+        "deleted=%s failed=%s audio_preserved=%s duplicates_removed=%s",
         user.id,
         safe_mode,
         sweep_floor,
         current_message_id,
         len(deleted),
         len(failed),
-        len(audio_message_ids),
+        len(keeper_audio_ids),
+        len(duplicate_audio_ids.intersection(deleted)),
     )
 
 
