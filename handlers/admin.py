@@ -635,7 +635,7 @@ async def admin_command_menu(message: types.Message) -> None:
         "/playall — Hantar semua lagu dari awal\n"
         "/search — Cari lagu\n"
         "/clearlink — Buang link asal yang diproses\n"
-        "/clearall — Bersihkan group, tinggal audio\n"
+        "/clearall — [GROUP] Buang link & chat, semua audio kekal\n"
         "/playsync — Info PlaySync\n"
         "/stopsync — Keluar PlaySync\n\n"
         "<b>Admin</b>\n"
