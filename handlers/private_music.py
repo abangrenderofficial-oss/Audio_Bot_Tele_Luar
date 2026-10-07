@@ -29,6 +29,40 @@ router = Router(name=__name__)
 
 _CLEARALL_SWEEP_LIMIT = 1500
 _CLEARALL_SWEEP_MARGIN = 250
+_LEGACY_PROBE_LIMIT = 500
+
+
+def _message_has_audio_payload(message: types.Message) -> bool:
+    if getattr(message, "audio", None) is not None:
+        return True
+    if getattr(message, "voice", None) is not None:
+        return True
+    document = getattr(message, "document", None)
+    mime_type = str(getattr(document, "mime_type", "") or "").lower()
+    return bool(document is not None and mime_type.startswith("audio/"))
+
+
+async def _probe_private_message_has_audio(
+    chat_id: int,
+    message_id: int,
+) -> bool | None:
+    try:
+        probe = await bot.forward_message(
+            chat_id=chat_id,
+            from_chat_id=chat_id,
+            message_id=int(message_id),
+            disable_notification=True,
+        )
+    except Exception:
+        return None
+
+    try:
+        return _message_has_audio_payload(probe)
+    finally:
+        try:
+            await bot.delete_message(chat_id, int(probe.message_id))
+        except Exception:
+            pass
 
 
 async def _clean_private_audio_message(
@@ -119,12 +153,28 @@ async def clear_all_private_music(message: types.Message) -> None:
         target_ids.difference_update(audio_message_ids)
         safe_mode = "tracked-sweep"
     else:
-        # If there is no audio registry, Bot API gives us no way to inspect an
-        # old message by id before deleting it. Delete only known link/source
-        # messages and this command instead of risking another audio deletion.
-        sweep_floor = current_message_id
+        # Legacy private history can predate persistent audio tracking. Probe
+        # each recent message by briefly forwarding it back into the same
+        # private chat. Telegram returns the forwarded Message object, so we
+        # can inspect whether it is audio before deciding what to delete.
+        sweep_floor = max(1, current_message_id - _LEGACY_PROBE_LIMIT)
         target_ids = set(source_ids) | {current_message_id}
-        safe_mode = "known-only"
+        probed_audio_ids: set[int] = set()
+
+        for candidate_id in range(sweep_floor, current_message_id):
+            has_audio = await _probe_private_message_has_audio(
+                message.chat.id,
+                candidate_id,
+            )
+            if has_audio is True:
+                probed_audio_ids.add(candidate_id)
+            elif has_audio is False:
+                target_ids.add(candidate_id)
+            await asyncio.sleep(0.025)
+
+        audio_message_ids.update(probed_audio_ids)
+        target_ids.difference_update(audio_message_ids)
+        safe_mode = "legacy-probe"
 
     deleted, failed = await delete_private_messages(
         message.chat.id,
