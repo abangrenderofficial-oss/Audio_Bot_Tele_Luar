@@ -389,15 +389,13 @@ async def clear_all_group_text(message: types.Message) -> None:
     else:
         raw_tracks = list(await db.list_music_group_tracks(message.chat.id))
 
-    tracks, duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
+    tracks, _duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
+    # /clearall is text/link cleanup only. Preserve EVERY audio message we
+    # know about, including older duplicate songs. Duplicate prevention is
+    # handled when a new song is sent, not by /clearall.
     audio_message_ids = {
         int(track.audio_message_id)
-        for track in tracks
-        if getattr(track, "audio_message_id", None) is not None
-    }
-    duplicate_audio_ids = {
-        int(track.audio_message_id)
-        for track in duplicate_tracks
+        for track in raw_tracks
         if getattr(track, "audio_message_id", None) is not None
     }
 
@@ -433,13 +431,7 @@ async def clear_all_group_text(message: types.Message) -> None:
 
     # Explicit ids are still included when they fall just outside the sweep.
     # Known audio ids are never sent to Telegram's delete API.
-    target_ids = (
-        sweep_ids
-        | tracked_ids
-        | source_ids
-        | duplicate_audio_ids
-        | {current_message_id}
-    )
+    target_ids = sweep_ids | tracked_ids | source_ids | {current_message_id}
     target_ids.difference_update(audio_message_ids)
 
     deleted, failed = await _delete_group_messages(
@@ -447,7 +439,7 @@ async def clear_all_group_text(message: types.Message) -> None:
         target_ids,
     )
 
-    for track in tracks:
+    for track in raw_tracks:
         await _clean_group_audio_message(message.chat.id, track)
 
     deleted_source_ids = sorted(source_ids.intersection(deleted))
@@ -463,14 +455,13 @@ async def clear_all_group_text(message: types.Message) -> None:
 
     logging.info(
         "Group clearall complete: group=%s sweep=%s-%s deleted=%s failed=%s "
-        "audio_preserved=%s duplicates_removed=%s",
+        "audio_preserved=%s",
         message.chat.id,
         sweep_floor,
         current_message_id,
         len(deleted),
         len(failed),
         len(audio_message_ids),
-        len(duplicate_audio_ids.intersection(deleted)),
     )
 
 

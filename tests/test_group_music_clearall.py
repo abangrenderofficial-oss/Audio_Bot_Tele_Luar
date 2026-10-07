@@ -115,7 +115,7 @@ async def test_connectmusic_can_be_used_by_regular_group_member(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clearall_removes_duplicate_audio_and_cleans_old_quality_caption(monkeypatch):
+async def test_clearall_preserves_duplicate_audio_and_cleans_old_quality_caption(monkeypatch):
     message = DummyMessage()
     message.message_id = 220
     raw_tracks = [
@@ -180,9 +180,15 @@ async def test_clearall_removes_duplicate_audio_and_cleans_old_quality_caption(m
         for call in fake_bot.delete_messages.await_args_list
         for message_id in call.kwargs["message_ids"]
     }
-    assert 201 in deleted_ids
     assert 180 not in deleted_ids
     assert 200 not in deleted_ids
+    assert 201 not in deleted_ids
+
+    edited_message_ids = {
+        call.kwargs["message_id"]
+        for call in fake_bot.edit_message_media.await_args_list
+    }
+    assert {180, 200, 201}.issubset(edited_message_ids)
 
     youtube_edit = next(
         call
