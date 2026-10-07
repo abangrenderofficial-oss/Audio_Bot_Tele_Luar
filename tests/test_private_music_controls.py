@@ -39,7 +39,7 @@ async def test_private_clearall_preserves_all_audio_including_duplicates(monkeyp
     duplicate = _track(22, file_id="file-b")
 
     delete_messages = AsyncMock(
-        return_value=({19, 21, 22, 30}, set())
+        return_value=({19, 21, 30}, set())
     )
     clean_audio = AsyncMock()
 
@@ -69,11 +69,13 @@ async def test_private_clearall_preserves_all_audio_including_duplicates(monkeyp
 
     target_ids = delete_messages.await_args.args[1]
     assert 20 not in target_ids
-    assert 22 in target_ids
+    assert 22 not in target_ids
     assert 19 in target_ids
     assert 21 in target_ids
     assert 30 in target_ids
-    clean_audio.assert_awaited_once_with(message.chat.id, first)
+    assert clean_audio.await_count == 2
+    clean_audio.assert_any_await(message.chat.id, first)
+    clean_audio.assert_any_await(message.chat.id, duplicate)
 
 
 @pytest.mark.asyncio
