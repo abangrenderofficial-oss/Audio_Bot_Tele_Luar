@@ -93,9 +93,10 @@ def _prepare_youtube_cookie_env(*, uid: int, gid: int) -> bool:
         raise RuntimeError(f"{YOUTUBE_COOKIES_B64_ENV} decoded to an empty file.")
 
     first_line = payload.splitlines()[0] if payload.splitlines() else b""
-    if b"Netscape HTTP Cookie File" not in first_line:
+    valid_headers = (b"# Netscape HTTP Cookie File", b"# HTTP Cookie File")
+    if not any(first_line.startswith(header) for header in valid_headers):
         raise RuntimeError(
-            f"{YOUTUBE_COOKIES_B64_ENV} must contain a Netscape cookies.txt export."
+            f"{YOUTUBE_COOKIES_B64_ENV} must contain a Netscape/Mozilla cookies.txt export."
         )
 
     RUNTIME_YOUTUBE_COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)

@@ -236,7 +236,12 @@ def _start_pot_provider() -> subprocess.Popen | None:
         "--port",
         str(POT_PORT),
     ]
-    process = subprocess.Popen(command, cwd=str(node_modules))
+    process = subprocess.Popen(
+        command,
+        cwd=str(node_modules),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     if _wait_for_port(POT_HOST, POT_PORT):
         print(f"[POT] HTTP provider ready at http://{POT_HOST}:{POT_PORT}", flush=True)
         return process
