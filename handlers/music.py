@@ -638,6 +638,7 @@ async def process_music_link(
         await mirror_private_audio_to_admin_group(
             message,
             file_id=getattr(audio, "file_id", None),
+            source_message_id=getattr(sent, "message_id", None),
             title=private_title,
             performer=private_performer,
             duration=private_duration,
@@ -985,6 +986,7 @@ async def process_music_link(
                         await mirror_private_audio_to_admin_group(
                             message,
                             file_id=fast_result.get("file_id"),
+                            source_message_id=fast_result.get("message_id"),
                             title=fast_title,
                             performer=fast_performer,
                             duration=fast_duration,
@@ -1223,6 +1225,7 @@ async def process_music_link(
                         await mirror_private_audio_to_admin_group(
                             message,
                             file_id=social_result.get("file_id"),
+                            source_message_id=social_result.get("message_id"),
                             title=social_title,
                             performer=social_performer,
                             duration=social_duration,

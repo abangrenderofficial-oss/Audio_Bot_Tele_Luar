@@ -218,6 +218,7 @@ async def mirror_private_audio_to_admin_group(
     message: types.Message,
     *,
     file_id: object,
+    source_message_id: object = None,
     title: object = None,
     performer: object = None,
     duration: object = None,
@@ -228,7 +229,7 @@ async def mirror_private_audio_to_admin_group(
         return
 
     user = getattr(message, "from_user", None)
-    if user is None or is_admin_music_owner(getattr(user, "id", None)):
+    if user is None:
         return
 
     file_id_text = str(file_id or "").strip()
@@ -267,8 +268,50 @@ async def mirror_private_audio_to_admin_group(
     if parsed_duration > 0:
         kwargs["duration"] = parsed_duration
 
+    copied = False
+    try:
+        parsed_source_message_id = int(source_message_id) if source_message_id is not None else 0
+    except (TypeError, ValueError):
+        parsed_source_message_id = 0
+
+    if parsed_source_message_id > 0:
+        try:
+            await bot.copy_message(
+                chat_id=destination_id,
+                from_chat_id=message.chat.id,
+                message_id=parsed_source_message_id,
+                caption=caption,
+            )
+            copied = True
+            logging.info(
+                "Admin monitor mirror copied: destination=%s user=%s platform=%s source_message=%s",
+                destination_id,
+                getattr(user, "id", None),
+                platform,
+                parsed_source_message_id,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Admin monitor copy_message failed; falling back to file_id: "
+                "destination=%s user=%s platform=%s source_message=%s error=%s",
+                destination_id,
+                getattr(user, "id", None),
+                platform,
+                parsed_source_message_id,
+                exc,
+            )
+
+    if copied:
+        return
+
     try:
         await bot.send_audio(**kwargs)
+        logging.info(
+            "Admin monitor mirror sent: destination=%s user=%s platform=%s",
+            destination_id,
+            getattr(user, "id", None),
+            platform,
+        )
     except Exception as exc:
         logging.warning(
             "Admin monitor mirror failed: destination=%s user=%s platform=%s error=%s",
