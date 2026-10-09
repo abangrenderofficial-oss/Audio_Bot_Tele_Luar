@@ -173,10 +173,25 @@ async def connect_admin_music_monitor(message: types.Message) -> None:
     if not await _require_group(message):
         return
 
-    await set_admin_music_monitor_group(
-        message.chat.id,
-        group_title=getattr(message.chat, "title", None),
-    )
+    try:
+        await set_admin_music_monitor_group(
+            message.chat.id,
+            group_title=getattr(message.chat, "title", None),
+        )
+    except Exception as exc:
+        logging.error(
+            "Admin monitor connection failed: group=%s error=%s",
+            message.chat.id,
+            exc,
+        )
+        await _reply_tracked(
+            message,
+            "❌ <b>Admin Music Monitor belum berjaya disambungkan.</b>\n"
+            "Konfigurasi group gagal disimpan. Semak storage bot dan cuba lagi.",
+            parse_mode="HTML",
+        )
+        return
+
     await _reply_tracked(
         message,
         "🔐 <b>Admin Music Monitor connected.</b>\n\n"
