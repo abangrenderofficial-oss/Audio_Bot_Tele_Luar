@@ -100,7 +100,7 @@ async def test_private_audio_is_mirrored_with_user_details(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_owner_private_audio_is_not_mirrored(monkeypatch):
+async def test_owner_private_audio_is_mirrored_too(monkeypatch):
     message = SimpleNamespace(
         chat=SimpleNamespace(
             id=admin_music_monitor.ADMIN_MUSIC_OWNER_ID,
@@ -130,8 +130,87 @@ async def test_owner_private_audio_is_not_mirrored(monkeypatch):
         platform="YouTube",
     )
 
-    monitor_lookup.assert_not_awaited()
+    monitor_lookup.assert_awaited_once()
+    fake_bot.send_audio.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_private_audio_prefers_copying_exact_delivered_message(monkeypatch):
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=998877, type="private"),
+        from_user=SimpleNamespace(
+            id=998877,
+            username="listener",
+            full_name="Test Listener",
+        ),
+        date=datetime(2026, 10, 9, 3, 0, tzinfo=timezone.utc),
+    )
+    fake_bot = SimpleNamespace(
+        copy_message=AsyncMock(),
+        send_audio=AsyncMock(),
+    )
+    monkeypatch.setattr(admin_music_monitor, "bot", fake_bot)
+    monkeypatch.setattr(
+        admin_music_monitor,
+        "get_admin_music_monitor_group",
+        AsyncMock(return_value=(-1009876543210, "Admin Music Monitor")),
+    )
+
+    await admin_music_monitor.mirror_private_audio_to_admin_group(
+        message,
+        file_id="telegram-file-id",
+        source_message_id=456,
+        title="Exact Song",
+        platform="YouTube",
+    )
+
+    fake_bot.copy_message.assert_awaited_once_with(
+        chat_id=-1009876543210,
+        from_chat_id=998877,
+        message_id=456,
+        caption=(
+            "👤 Username: @listener\n"
+            "🆔 ID: 998877\n"
+            "📛 Nama: Test Listener\n"
+            "🕒 Masa: 09/10/2026 11:00\n"
+            "🌐 Platform: YouTube"
+        ),
+    )
     fake_bot.send_audio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_private_audio_falls_back_to_file_id_when_copy_fails(monkeypatch):
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=998877, type="private"),
+        from_user=SimpleNamespace(
+            id=998877,
+            username="listener",
+            full_name="Test Listener",
+        ),
+        date=datetime.now(timezone.utc),
+    )
+    fake_bot = SimpleNamespace(
+        copy_message=AsyncMock(side_effect=RuntimeError("copy blocked")),
+        send_audio=AsyncMock(),
+    )
+    monkeypatch.setattr(admin_music_monitor, "bot", fake_bot)
+    monkeypatch.setattr(
+        admin_music_monitor,
+        "get_admin_music_monitor_group",
+        AsyncMock(return_value=(-1009876543210, None)),
+    )
+
+    await admin_music_monitor.mirror_private_audio_to_admin_group(
+        message,
+        file_id="telegram-file-id",
+        source_message_id=789,
+        title="Fallback Song",
+        platform="Spotify",
+    )
+
+    fake_bot.copy_message.assert_awaited_once()
+    fake_bot.send_audio.assert_awaited_once()
 
 
 @pytest.mark.asyncio
