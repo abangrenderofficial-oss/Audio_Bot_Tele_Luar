@@ -304,6 +304,7 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
             await mirror_private_audio_to_admin_group(
                 message,
                 file_id=getattr(audio, "file_id", None),
+                source_message_id=getattr(sent, "message_id", None),
                 title=private_title,
                 performer=private_performer,
                 duration=private_duration,
