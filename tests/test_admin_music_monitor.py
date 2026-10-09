@@ -186,3 +186,104 @@ async def test_monitor_destination_persists_through_remote_music_store(monkeypat
 
     assert group_id == -100222
     assert title == "Latest Monitor"
+
+
+class _MonitorTestSession:
+    def __init__(self, shared):
+        self.shared = shared
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def begin(self):
+        return self
+
+    async def get(self, model, config_id):
+        assert config_id == 1
+        return self.shared.get("row")
+
+    def add(self, row):
+        self.shared["row"] = row
+
+    async def scalar(self, statement):
+        return self.shared.get("row")
+
+
+class _MonitorTestDatabase:
+    def __init__(self):
+        self.shared = {}
+
+    def SessionLocal(self):
+        return _MonitorTestSession(self.shared)
+
+
+@pytest.mark.asyncio
+async def test_monitor_group_survives_restart_without_remote_cache(monkeypatch):
+    fake_db = _MonitorTestDatabase()
+    monkeypatch.setattr(admin_music_monitor, "db", fake_db)
+    monkeypatch.setattr(
+        admin_music_monitor,
+        "set_remote_music_group_connected",
+        AsyncMock(return_value=False),
+    )
+    read_remote = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        admin_music_monitor, "list_remote_music_group_tracks", read_remote
+    )
+    admin_music_monitor._monitor_group_id = None
+    admin_music_monitor._monitor_group_title = None
+
+    await admin_music_monitor.set_admin_music_monitor_group(
+        -1001234567890, group_title="Monitor muzik"
+    )
+    assert fake_db.shared["row"].group_id == -1001234567890
+    assert fake_db.shared["row"].group_title == "Monitor muzik"
+
+    # Simulate bot restart (process-local state lost).
+    admin_music_monitor._monitor_group_id = None
+    admin_music_monitor._monitor_group_title = None
+    assert await admin_music_monitor.get_admin_music_monitor_group() == (
+        -1001234567890,
+        "Monitor muzik",
+    )
+    read_remote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_monitor_connection_does_not_confirm_without_durable_storage(monkeypatch):
+    class BrokenDB:
+        def SessionLocal(self):
+            raise RuntimeError("database offline")
+
+    monkeypatch.setattr(admin_music_monitor, "db", BrokenDB())
+    monkeypatch.setattr(
+        admin_music_monitor,
+        "set_remote_music_group_connected",
+        AsyncMock(return_value=False),
+    )
+    admin_music_monitor._monitor_group_id = None
+    admin_music_monitor._monitor_group_title = None
+
+    with pytest.raises(RuntimeError, match="could not be saved"):
+        await admin_music_monitor.set_admin_music_monitor_group(-1001234567890)
+
+    assert admin_music_monitor._monitor_group_id is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_command_reports_storage_failure(monkeypatch):
+    message = DummyGroupMessage(admin_music_monitor.ADMIN_MUSIC_OWNER_ID)
+    monkeypatch.setattr(
+        group_music,
+        "set_admin_music_monitor_group",
+        AsyncMock(side_effect=RuntimeError("database and cache down")),
+    )
+    monkeypatch.setattr(group_music, "_remember_cleanup_message", AsyncMock())
+
+    await group_music.connect_admin_music_monitor(message)
+
+    message.reply.assert_awaited_once()
+    assert "belum berjaya" in message.reply.await_args.args[0]

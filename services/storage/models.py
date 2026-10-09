@@ -37,6 +37,7 @@ APP_SCHEMA_TABLES = frozenset(
         "settings",
         "groups",
         "group_members",
+        "admin_music_monitor_settings",
         "music_group_settings",
         "music_group_tracks",
         "music_group_cleanup_messages",
@@ -120,6 +121,21 @@ class GroupMember(Base):
     group_id = Column(BigInteger, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
     user_id = Column(BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
     last_seen_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AdminMusicMonitorSettings(Base):
+    """Single durable destination for private audio audit copies."""
+
+    __tablename__ = "admin_music_monitor_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=False)
+    group_id = Column(BigInteger, nullable=False)
+    group_title = Column(Text, nullable=True)
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class MusicGroupSettings(Base):

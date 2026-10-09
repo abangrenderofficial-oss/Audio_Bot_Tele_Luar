@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import types
+from sqlalchemy import select
 
-from app_context import bot
+from app_context import bot, db
+from services.storage.models import AdminMusicMonitorSettings
 from services.logger import logger as logging
 from services.storage.music_cache import (
     add_remote_music_group_track,
@@ -38,37 +40,81 @@ async def set_admin_music_monitor_group(
     *,
     group_title: str | None = None,
 ) -> None:
+    """Confirm connection only if a durable destination has been saved."""
     global _monitor_group_id, _monitor_group_title
 
     gid = int(group_id)
-    _monitor_group_id = gid
-    _monitor_group_title = str(group_title or "").strip() or None
+    title = str(group_title or "").strip() or None
+    database_saved = False
+    remote_saved = False
 
     try:
-        await set_remote_music_group_connected(
+        async with db.SessionLocal() as session:
+            async with session.begin():
+                row = await session.get(AdminMusicMonitorSettings, 1)
+                if row is None:
+                    session.add(
+                        AdminMusicMonitorSettings(
+                            id=1,
+                            group_id=gid,
+                            group_title=title,
+                        )
+                    )
+                else:
+                    row.group_id = gid
+                    row.group_title = title
+        database_saved = True
+    except Exception as exc:
+        logging.warning(
+            "Admin monitor database persistence failed: group=%s error=%s",
+            gid,
+            exc,
+        )
+
+    # Keep compatibility with installations that previously stored monitor
+    # destinations in remote music-cache track records. The database above
+    # is the authoritative store after this change.
+    try:
+        remote_connected = await set_remote_music_group_connected(
             _ADMIN_MONITOR_SENTINEL_GROUP_ID,
             connected=True,
             connected_by_user_id=ADMIN_MUSIC_OWNER_ID,
         )
-        await add_remote_music_group_track(
-            group_id=_ADMIN_MONITOR_SENTINEL_GROUP_ID,
-            added_by_user_id=ADMIN_MUSIC_OWNER_ID,
-            service=_ADMIN_MONITOR_SERVICE,
-            source_url=f"admin-monitor://{gid}",
-            title=str(gid),
-            performer=_monitor_group_title,
-            telegram_file_id=_ADMIN_MONITOR_FILE_ID,
-            duration_seconds=None,
-            source_message_id=None,
-            audio_message_id=int(time.time() * 1000),
-        )
+        if remote_connected:
+            stored = await add_remote_music_group_track(
+                group_id=_ADMIN_MONITOR_SENTINEL_GROUP_ID,
+                added_by_user_id=ADMIN_MUSIC_OWNER_ID,
+                service=_ADMIN_MONITOR_SERVICE,
+                source_url=f"admin-monitor://{gid}",
+                title=str(gid),
+                performer=title,
+                telegram_file_id=_ADMIN_MONITOR_FILE_ID,
+                duration_seconds=None,
+                source_message_id=None,
+                audio_message_id=int(time.time() * 1000),
+            )
+            remote_saved = bool(stored)
     except Exception as exc:
         logging.warning(
-            "Admin monitor persistence failed; using in-memory destination: "
-            "group=%s error=%s",
+            "Admin monitor legacy cache persistence failed: group=%s error=%s",
             gid,
             exc,
         )
+
+    if not database_saved and not remote_saved:
+        raise RuntimeError(
+            "Admin Music Monitor destination could not be saved. "
+            "Check database and remote cache connectivity."
+        )
+
+    _monitor_group_id = gid
+    _monitor_group_title = title
+    logging.info(
+        "Admin music monitor connected: group=%s database=%s remote=%s",
+        gid,
+        database_saved,
+        remote_saved,
+    )
 
 
 def _config_sort_key(item: dict) -> tuple[int, str]:
@@ -86,13 +132,32 @@ async def get_admin_music_monitor_group() -> tuple[int | None, str | None]:
     if _monitor_group_id is not None:
         return _monitor_group_id, _monitor_group_title
 
+    # Survives Render instance restarts and works when the remote cache is down.
+    try:
+        async with db.SessionLocal() as session:
+            row = await session.scalar(
+                select(AdminMusicMonitorSettings).where(
+                    AdminMusicMonitorSettings.id == 1
+                )
+            )
+            if row is not None:
+                _monitor_group_id = int(row.group_id)
+                _monitor_group_title = (
+                    str(row.group_title or "").strip() or None
+                )
+                return _monitor_group_id, _monitor_group_title
+    except Exception as exc:
+        logging.warning("Admin monitor database lookup failed: %s", exc)
+
+    # Legacy compatibility: recover a destination registered before the
+    # database migration. A new /connectadminmusic will save it to PostgreSQL.
     try:
         rows = await list_remote_music_group_tracks(
             _ADMIN_MONITOR_SENTINEL_GROUP_ID,
             limit=500,
         )
     except Exception as exc:
-        logging.warning("Admin monitor config lookup failed: %s", exc)
+        logging.warning("Admin monitor legacy lookup failed: %s", exc)
         rows = None
 
     if not rows:
@@ -172,6 +237,12 @@ async def mirror_private_audio_to_admin_group(
 
     destination_id, _destination_title = await get_admin_music_monitor_group()
     if destination_id is None:
+        logging.warning(
+            "Admin monitor destination missing; run /connectadminmusic "
+            "in the monitoring group again: user=%s platform=%s",
+            getattr(user, "id", None),
+            platform,
+        )
         return
 
     caption = "\n".join(_user_detail_lines(message, platform))
