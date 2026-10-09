@@ -1,4 +1,9 @@
 import json
+from http.client import HTTPConnection
+from threading import Thread
+from http.server import ThreadingHTTPServer
+
+import pytest
 
 import health_server
 
@@ -47,3 +52,45 @@ def test_fetch_local_pot_posts_empty_json(monkeypatch):
         "content_type": "application/json",
         "timeout": 30,
     }
+
+
+@pytest.mark.parametrize("path", ["/", "/health", "/ready", "/health?probe=uptimerobot"])
+def test_health_endpoint_supports_head_and_get(path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), health_server.HealthHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        for method in ("HEAD", "GET"):
+            connection.request(method, path)
+            response = connection.getresponse()
+            body = response.read()
+            assert response.status == 200
+            assert response.getheader("Content-Type") == "application/json"
+            assert int(response.getheader("Content-Length")) > 0
+            if method == "HEAD":
+                assert body == b""
+            else:
+                assert json.loads(body)["ok"] is True
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)
+
+
+def test_unknown_head_path_still_returns_404():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), health_server.HealthHandler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        connection.request("HEAD", "/missing")
+        response = connection.getresponse()
+        assert response.status == 404
+        assert response.read() == b""
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)

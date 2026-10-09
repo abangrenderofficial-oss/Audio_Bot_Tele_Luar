@@ -70,8 +70,10 @@ def _fetch_local_pot() -> bytes:
 
 
 class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.path not in ("/", "/health", "/ready"):
+    def _respond_health(self, *, include_body: bool) -> None:
+        # UptimeRobot HTTP monitors send HEAD by default. A GET-only
+        # BaseHTTPRequestHandler responds with 501 to those requests.
+        if urlsplit(self.path).path not in ("/", "/health", "/ready"):
             self.send_response(404)
             self.end_headers()
             return
@@ -81,7 +83,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        if include_body:
+            self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        self._respond_health(include_body=True)
+
+    def do_HEAD(self) -> None:
+        self._respond_health(include_body=False)
 
     def do_POST(self) -> None:
         parsed = urlsplit(self.path)
