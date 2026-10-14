@@ -216,16 +216,16 @@ def _user_detail_lines(
     message: types.Message,
     platform: str,
     source_url: str | None = None,
+    delivered_at: datetime | None = None,
 ) -> list[str]:
     user = getattr(message, "from_user", None)
     username = f"@{html.escape(str(user.username))}" if user and getattr(user, "username", None) else "—"
     full_name = html.escape(str(getattr(user, "full_name", "") or "").strip()) or "—"
     user_id = getattr(user, "id", "—")
-    msg_date = getattr(message, "date", None)
-    if isinstance(msg_date, datetime):
-        when = msg_date if msg_date.tzinfo else msg_date.replace(tzinfo=timezone.utc)
-    else:
-        when = datetime.now(timezone.utc)
+    # Time of successful audio delivery, not the earlier link-request time.
+    when = delivered_at if isinstance(delivered_at, datetime) else datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
     local_time = when.astimezone(_KL_TZ)
     lines = [
         f"👤 Username: {username}",
@@ -249,6 +249,7 @@ async def mirror_private_audio_to_admin_group(
     duration: object = None,
     platform: str,
     source_url: str | None = None,
+    delivered_at: datetime | None = None,
 ) -> None:
     chat_type = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
     if chat_type != "private":
@@ -286,7 +287,7 @@ async def mirror_private_audio_to_admin_group(
         )
         return
 
-    caption = "\n".join(_user_detail_lines(message, platform, source_url))
+    caption = "\n".join(_user_detail_lines(message, platform, source_url, delivered_at))
     kwargs: dict[str, object] = {
         "chat_id": destination_id,
         "audio": file_id_text,
