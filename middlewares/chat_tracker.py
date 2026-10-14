@@ -95,6 +95,30 @@ class ChatTrackerMiddleware(BaseMiddleware):
 
         chat_type_value = self._resolve_chat_type(chat.type)
 
+        # Track only known Telegram message IDs. Never sweep unobserved history.
+        # Voice and audio documents are protected together with ordinary audio.
+        remember = getattr(self._db, "remember_music_chat_message", None)
+        message_id = getattr(message_or_chat, "message_id", None)
+        if callable(remember) and message_id is not None and chat_type_value in (
+            "private", "group", "supergroup",
+        ):
+            audio = getattr(message_or_chat, "audio", None)
+            voice = getattr(message_or_chat, "voice", None)
+            document = getattr(message_or_chat, "document", None)
+            is_audio_document = bool(
+                document and str(getattr(document, "mime_type", "") or "").lower().startswith("audio/")
+            )
+            audio_item = audio or voice or (document if is_audio_document else None)
+            unique_id = getattr(audio_item, "file_unique_id", None)
+            try:
+                await remember(
+                    chat_id=int(chat.id), message_id=int(message_id),
+                    chat_type=chat_type_value, is_audio=bool(audio_item),
+                    audio_key=(f"telegram:{unique_id}" if unique_id else None),
+                )
+            except Exception as exc:
+                logging.warning("Music cleanup message tracking failed: %s", exc)
+
         if chat_type_value == "private":
             if user and not getattr(user, "is_bot", False):
                 await self._ensure_user(user, has_dm=True)
