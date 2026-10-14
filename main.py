@@ -648,6 +648,12 @@ async def main():
             logging.event("bot_startup", bot_username=bot_me.username)
             set_app_context(bot=bot, db=db, send_analytics=send_analytics)
             await db.init_db()
+            # Track bot-generated text/status messages alongside user messages.
+            # The recorder is best-effort and does not modify Telegram responses.
+            from middlewares.music_outgoing_cleanup import MusicOutgoingCleanupMiddleware
+            outgoing_middleware = getattr(bot.session, "middleware", None)
+            if outgoing_middleware is not None:
+                outgoing_middleware.register(MusicOutgoingCleanupMiddleware())
             logging.info(
                 "[STARTUP] Storage initialized: %s",
                 "PostgreSQL" if DATABASE_URL else "memory (no external database)",
