@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import html
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import types
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app_context import bot, db
-from services.storage.models import AdminMusicMonitorSettings
+from services.storage.models import AdminMusicMonitorSettings, MusicPrivateAudioDelivery
 from services.logger import logger as logging
 from services.storage.music_cache import (
     add_remote_music_group_track,
@@ -181,38 +182,62 @@ async def get_admin_music_monitor_group() -> tuple[int | None, str | None]:
     return _monitor_group_id, _monitor_group_title
 
 
-def _user_detail_lines(message: types.Message, platform: str) -> list[str]:
+async def record_music_private_audio_delivery(
+    *, user_id: int, audio_message_id: int, platform: str,
+) -> None:
+    """Idempotent MusiX-only success record, not a group-message counter."""
+    if int(user_id) <= 0 or int(audio_message_id) <= 0:
+        return
+    async with db.SessionLocal() as session:
+        async with session.begin():
+            stmt = db._insert(MusicPrivateAudioDelivery).values(
+                user_id=int(user_id),
+                audio_message_id=int(audio_message_id),
+                platform=str(platform or "Unknown")[:100],
+            )
+            await session.execute(stmt.on_conflict_do_nothing(
+                index_elements=[
+                    MusicPrivateAudioDelivery.user_id,
+                    MusicPrivateAudioDelivery.audio_message_id,
+                ],
+            ))
+
+
+async def count_unique_music_audio_users() -> int:
+    """Only verified private audio delivery rows from the MusiX service."""
+    async with db.SessionLocal() as session:
+        result = await session.scalar(
+            select(func.count(func.distinct(MusicPrivateAudioDelivery.user_id)))
+        )
+    return int(result or 0)
+
+
+def _user_detail_lines(
+    message: types.Message,
+    platform: str,
+    source_url: str | None = None,
+) -> list[str]:
     user = getattr(message, "from_user", None)
-    if user is None:
-        return [f"🌐 Platform: {platform}"]
-
-    username = f"@{user.username}" if getattr(user, "username", None) else "—"
-    lines = [
-        f"👤 Username: {username}",
-        f"🆔 ID: {user.id}",
-    ]
-
-    full_name = str(getattr(user, "full_name", "") or "").strip()
-    if full_name:
-        lines.append(f"📛 Nama: {full_name}")
-
+    username = f"@{html.escape(str(user.username))}" if user and getattr(user, "username", None) else "—"
+    full_name = html.escape(str(getattr(user, "full_name", "") or "").strip()) or "—"
+    user_id = getattr(user, "id", "—")
     msg_date = getattr(message, "date", None)
     if isinstance(msg_date, datetime):
-        when = msg_date
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
+        when = msg_date if msg_date.tzinfo else msg_date.replace(tzinfo=timezone.utc)
     else:
         when = datetime.now(timezone.utc)
-
     local_time = when.astimezone(_KL_TZ)
-    lines.extend(
-        [
-            f"🕒 Masa: {local_time:%d/%m/%Y %H:%M}",
-            f"🌐 Platform: {platform}",
-        ]
-    )
+    lines = [
+        f"👤 Username: {username}",
+        f"🆔 ID: {user_id}",
+        f"📛 Nama: {full_name}",
+        f"📅 Tarikh: {local_time:%d/%m/%Y}",
+        f"🕒 Masa: {local_time:%H:%M} (Malaysia)",
+        f"🌐 Source: {html.escape(str(platform or 'Unknown'))}",
+    ]
+    if source_url:
+        lines.append(f"🔗 Link: {html.escape(str(source_url).strip()[:350])}")
     return lines
-
 
 async def mirror_private_audio_to_admin_group(
     message: types.Message,
@@ -223,6 +248,7 @@ async def mirror_private_audio_to_admin_group(
     performer: object = None,
     duration: object = None,
     platform: str,
+    source_url: str | None = None,
 ) -> None:
     chat_type = str(getattr(message.chat, "type", "")).lower().split(".")[-1]
     if chat_type != "private":
@@ -236,6 +262,20 @@ async def mirror_private_audio_to_admin_group(
     if not file_id_text:
         return
 
+    # Record a real MusiX private audio delivery even if monitor forwarding is
+    # unavailable. The same audio message cannot be counted twice on retries.
+    try:
+        delivered_id = int(source_message_id) if source_message_id is not None else 0
+    except (ValueError, TypeError):
+        delivered_id = 0
+    if delivered_id > 0:
+        try:
+            await record_music_private_audio_delivery(
+                user_id=int(user.id), audio_message_id=delivered_id, platform=platform,
+            )
+        except Exception as exc:
+            logging.error("MusiX audio usage persistence failed: user=%s error=%s", user.id, exc)
+
     destination_id, _destination_title = await get_admin_music_monitor_group()
     if destination_id is None:
         logging.warning(
@@ -246,7 +286,7 @@ async def mirror_private_audio_to_admin_group(
         )
         return
 
-    caption = "\n".join(_user_detail_lines(message, platform))
+    caption = "\n".join(_user_detail_lines(message, platform, source_url))
     kwargs: dict[str, object] = {
         "chat_id": destination_id,
         "audio": file_id_text,
