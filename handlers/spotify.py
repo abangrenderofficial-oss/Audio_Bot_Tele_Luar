@@ -236,7 +236,7 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
             or getattr(audio, "performer", None)
         )
         private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
-        await record_private_audio(
+        saved = await record_private_audio(
             message,
             service="spotify",
             source_url=source_url,
@@ -246,15 +246,17 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
             performer=private_performer,
             duration=private_duration,
         )
-        await mirror_private_audio_to_admin_group(
-            message,
-            file_id=getattr(audio, "file_id", None),
-            source_message_id=getattr(sent, "message_id", None),
-            title=private_title,
-            performer=private_performer,
-            duration=private_duration,
-            platform="Spotify",
-        )
+        if saved:
+            await mirror_private_audio_to_admin_group(
+                message,
+                file_id=getattr(audio, "file_id", None),
+                source_message_id=getattr(sent, "message_id", None),
+                title=private_title,
+                performer=private_performer,
+                duration=private_duration,
+                platform="Spotify",
+                source_url=source_url,
+            )
         return sent
 
     audio_sender = (
@@ -526,7 +528,7 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                     duration=result_duration,
                 )
                 if not group_music_connected:
-                    await record_private_audio(
+                    saved = await record_private_audio(
                         message,
                         service="spotify",
                         source_url=source_url,
@@ -536,15 +538,17 @@ async def process_spotify(message: types.Message, direct_url: Optional[str] = No
                         performer=performer,
                         duration=result_duration,
                     )
-                    await mirror_private_audio_to_admin_group(
-                        message,
-                        file_id=file_id,
-                        source_message_id=fast_result.get("message_id"),
-                        title=title,
-                        performer=performer,
-                        duration=result_duration,
-                        platform="Spotify",
-                    )
+                    if saved:
+                        await mirror_private_audio_to_admin_group(
+                            message,
+                            file_id=file_id,
+                            source_message_id=fast_result.get("message_id"),
+                            title=title,
+                            performer=performer,
+                            duration=result_duration,
+                            platform="Spotify",
+                            source_url=source_url,
+                        )
                 request_lease.mark_success()
                 await maybe_delete_user_message(
                     message,
