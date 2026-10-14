@@ -38,6 +38,7 @@ APP_SCHEMA_TABLES = frozenset(
         "groups",
         "group_members",
         "admin_music_monitor_settings",
+        "music_private_audio_deliveries",
         "music_group_settings",
         "music_group_tracks",
         "music_group_cleanup_messages",
@@ -137,6 +138,20 @@ class AdminMusicMonitorSettings(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class MusicPrivateAudioDelivery(Base):
+    """One successful MusiX private audio per Telegram message, never MediaX activity."""
+
+    __tablename__ = "music_private_audio_deliveries"
+    __table_args__ = (
+        Index("ix_music_private_audio_delivery_created", "created_at"),
+    )
+
+    user_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    audio_message_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    platform = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
 class MusicGroupSettings(Base):
