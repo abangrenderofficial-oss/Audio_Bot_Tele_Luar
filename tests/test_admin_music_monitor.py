@@ -84,6 +84,7 @@ async def test_private_audio_is_mirrored_with_user_details(monkeypatch):
         performer="Example Artist",
         duration=205,
         platform="Spotify",
+        delivered_at=message.date,
     )
 
     kwargs = fake_bot.send_audio.await_args.kwargs
@@ -163,6 +164,7 @@ async def test_private_audio_prefers_copying_exact_delivered_message(monkeypatch
         source_message_id=456,
         title="Exact Song",
         platform="YouTube",
+        delivered_at=message.date,
     )
 
     fake_bot.copy_message.assert_awaited_once_with(
