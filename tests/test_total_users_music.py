@@ -122,3 +122,65 @@ def test_musix_delivery_key_idempotent_per_user_and_message():
     pkey = {column.name for column in MusicPrivateAudioDelivery.__table__.primary_key.columns}
     assert pkey == {"user_id", "audio_message_id"}
     assert MusicPrivateAudioDelivery.__tablename__ == "music_private_audio_deliveries"
+
+
+@pytest.mark.asyncio
+async def test_connectadminmusic_disables_previous_music_room_mode(monkeypatch):
+    monitor = MonitorMessage()
+    monitor.chat.title = "Shared Music/MediaX Logs"
+    fake_db = SimpleNamespace(
+        is_music_group_connected=AsyncMock(return_value=True),
+        set_music_group_connected=AsyncMock(),
+    )
+    monkeypatch.setattr(group_music, "db", fake_db)
+    monkeypatch.setattr(group_music, "set_admin_music_monitor_group", AsyncMock())
+    monkeypatch.setattr(group_music, "_remember_cleanup_message", AsyncMock())
+
+    await group_music.connect_admin_music_monitor(monitor)
+    fake_db.set_music_group_connected.assert_awaited_once_with(
+        monitor.chat.id, connected=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_monitor_does_not_count_group_audio_or_mediax_bot_messages(monkeypatch):
+    record = AsyncMock()
+    lookup = AsyncMock()
+    monkeypatch.setattr(admin_music_monitor, "record_music_private_audio_delivery", record)
+    monkeypatch.setattr(admin_music_monitor, "get_admin_music_monitor_group", lookup)
+
+    group_message = SimpleNamespace(
+        chat=SimpleNamespace(id=-100999, type="supergroup"),
+        from_user=SimpleNamespace(id=1234, username="someuser"),
+    )
+    await admin_music_monitor.mirror_private_audio_to_admin_group(
+        group_message, file_id="audio", source_message_id=111, platform="MediaX",
+    )
+    record.assert_not_awaited()
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_counter_insert_does_not_block_admin_audio_copy(monkeypatch):
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=100, type="private"),
+        from_user=SimpleNamespace(id=100, username=None, full_name="Listener"),
+        date=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        admin_music_monitor, "record_music_private_audio_delivery",
+        AsyncMock(side_effect=RuntimeError("database offline")),
+    )
+    monkeypatch.setattr(
+        admin_music_monitor, "get_admin_music_monitor_group",
+        AsyncMock(return_value=(-100999, None)),
+    )
+    copy = AsyncMock()
+    monkeypatch.setattr(
+        admin_music_monitor, "bot",
+        SimpleNamespace(copy_message=copy, send_audio=AsyncMock()),
+    )
+    await admin_music_monitor.mirror_private_audio_to_admin_group(
+        message, file_id="telegram-file", source_message_id=24, platform="YouTube",
+    )
+    copy.assert_awaited_once()
