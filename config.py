@@ -216,14 +216,8 @@ BOT_COMMANDS = [
 ]
 
 GROUP_MUSIC_COMMANDS = [
-    {"command": "connectmusic", "description": "Connect bot dengan group playlist"},
-    {"command": "clearlink", "description": "Buang semua link asal yang sudah diproses"},
-    {"command": "clearall", "description": "Bersihkan group dan kekalkan audio sahaja"},
-    {"command": "playlist", "description": "Lihat playlist group yang tersimpan"},
-    {"command": "playall", "description": "Hantar playlist group dari lagu pertama"},
-    {"command": "search", "description": "Cari lagu untuk tambah ke playlist"},
-    {"command": "playsync", "description": "Info sesi dengar bersama"},
-    {"command": "stopsync", "description": "Keluar daripada sesi dengar bersama"},
+    {"command": "connectmusic", "description": "Aktifkan auto audio dalam group"},
+    {"command": "clearall", "description": "Bersihkan teks dan kekalkan audio sahaja"},
 ]
 
 ADMINS_UID = [ADMIN_ID]
