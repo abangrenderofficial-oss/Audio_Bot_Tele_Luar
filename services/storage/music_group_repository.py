@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, or_, select, update
 
 from services.logger import logger as logging
 from services.music_group_dedupe import dedupe_music_group_tracks
-from services.storage.models import MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
+from services.storage.models import MusicChatCleanupMessage, MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
 
 logging = logging.bind(service="db_group_music")
 
@@ -256,3 +256,68 @@ class MusicGroupRepositoryMixin:
                         MusicGroupCleanupMessage.message_id.in_(ids),
                     )
                 )
+
+    async def remember_music_chat_message(
+        self, *, chat_id: int, message_id: int, chat_type: str,
+        is_audio: bool, audio_key: str | None = None,
+    ) -> None:
+        """Idempotently remember observed messages for safe scheduled cleanup."""
+        if int(message_id) <= 0 or chat_type not in {"private", "group", "supergroup"}:
+            return
+        async with self.SessionLocal() as session:
+            async with session.begin():
+                stmt = self._insert(MusicChatCleanupMessage).values(
+                    chat_id=int(chat_id), message_id=int(message_id),
+                    chat_type=chat_type, is_audio=bool(is_audio),
+                    audio_key=(str(audio_key) if audio_key else None),
+                )
+                await session.execute(stmt.on_conflict_do_update(
+                    index_elements=[
+                        MusicChatCleanupMessage.chat_id,
+                        MusicChatCleanupMessage.message_id,
+                    ],
+                    set_={
+                        "is_audio": stmt.excluded.is_audio,
+                        "audio_key": stmt.excluded.audio_key,
+                    },
+                ))
+
+    async def get_music_chat_cleanup_messages(self, chat_id: int):
+        async with self.SessionLocal() as session:
+            result = await session.execute(
+                select(MusicChatCleanupMessage).where(
+                    MusicChatCleanupMessage.chat_id == int(chat_id)
+                ).order_by(MusicChatCleanupMessage.message_id.asc())
+            )
+            return list(result.scalars().all())
+
+    async def remove_music_chat_cleanup_messages(
+        self, chat_id: int, message_ids: Sequence[int],
+    ) -> None:
+        ids = [int(value) for value in message_ids]
+        if not ids:
+            return
+        async with self.SessionLocal() as session:
+            async with session.begin():
+                await session.execute(delete(MusicChatCleanupMessage).where(
+                    MusicChatCleanupMessage.chat_id == int(chat_id),
+                    MusicChatCleanupMessage.message_id.in_(ids),
+                ))
+
+    async def list_music_chat_cleanup_targets(self):
+        """Only private users who have interacted and expressly connected music groups."""
+        async with self.SessionLocal() as session:
+            private_rows = await session.execute(
+                select(MusicChatCleanupMessage.chat_id)
+                .where(MusicChatCleanupMessage.chat_type == "private")
+                .distinct()
+            )
+            group_rows = await session.execute(
+                select(MusicGroupSettings.group_id).where(
+                    MusicGroupSettings.connected.is_(True)
+                )
+            )
+            return [
+                *[(int(value), "private") for value in private_rows.scalars().all()],
+                *[(int(value), "group") for value in group_rows.scalars().all()],
+            ]
