@@ -30,6 +30,7 @@ def test_removed_group_handlers_are_not_registered():
         "connect_music_group",
         "connect_admin_music_monitor",
         "clear_all_group_text",
+        "total_users_music",
     }.issubset(names)
     assert {
         "show_group_playlist",
