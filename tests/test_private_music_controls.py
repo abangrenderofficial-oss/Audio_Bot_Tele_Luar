@@ -29,111 +29,22 @@ def _track(
 
 
 @pytest.mark.asyncio
-async def test_private_clearall_preserves_all_audio_including_duplicates(monkeypatch):
+async def test_private_clearall_reuses_shared_quiet_cleanup(monkeypatch):
+    from services import music_chat_cleanup
+
     message = SimpleNamespace(
         chat=SimpleNamespace(id=1234, type="private"),
         from_user=SimpleNamespace(id=1234),
         message_id=30,
     )
-    first = _track(20, file_id="file-a")
-    duplicate = _track(22, file_id="file-b")
-
-    delete_messages = AsyncMock(
-        return_value=({19, 21, 30}, set())
-    )
-    clean_audio = AsyncMock()
-
-    monkeypatch.setattr(
-        private_music,
-        "list_private_tracks_raw",
-        AsyncMock(return_value=[first, duplicate]),
-    )
-    monkeypatch.setattr(
-        private_music,
-        "get_private_source_message_ids",
-        AsyncMock(return_value={19, 21}),
-    )
-    monkeypatch.setattr(
-        private_music,
-        "delete_private_messages",
-        delete_messages,
-    )
-    monkeypatch.setattr(
-        private_music,
-        "_clean_private_audio_message",
-        clean_audio,
-    )
-    monkeypatch.setattr(private_music, "_CLEARALL_SWEEP_LIMIT", 50)
+    cleanup = AsyncMock(return_value={"deleted": 5, "duplicates": 1, "failed": 0})
+    monkeypatch.setattr(music_chat_cleanup, "cleanup_music_chat", cleanup)
 
     await private_music.clear_all_private_music(message)
 
-    target_ids = delete_messages.await_args.args[1]
-    assert 20 not in target_ids
-    assert 22 not in target_ids
-    assert 19 in target_ids
-    assert 21 in target_ids
-    assert 30 in target_ids
-    assert clean_audio.await_count == 2
-    clean_audio.assert_any_await(message.chat.id, first)
-    clean_audio.assert_any_await(message.chat.id, duplicate)
-
-
-@pytest.mark.asyncio
-async def test_private_clearall_without_registry_probes_history_and_preserves_audio(monkeypatch):
-    message = SimpleNamespace(
-        chat=SimpleNamespace(id=1234, type="private"),
-        from_user=SimpleNamespace(id=1234),
-        message_id=128,
+    cleanup.assert_awaited_once_with(
+        message.chat.id, chat_type="private", command_message_id=message.message_id,
     )
-    delete_messages = AsyncMock(return_value=({120, 121, 122, 128}, set()))
-
-    async def probe(_chat_id, message_id):
-        if message_id == 124:
-            return True
-        if message_id in {120, 121, 122, 123, 125, 126, 127}:
-            return False
-        return None
-
-    monkeypatch.setattr(
-        private_music,
-        "list_private_tracks_raw",
-        AsyncMock(return_value=[]),
-    )
-    monkeypatch.setattr(
-        private_music,
-        "get_private_source_message_ids",
-        AsyncMock(return_value={120}),
-    )
-    monkeypatch.setattr(
-        private_music,
-        "delete_private_messages",
-        delete_messages,
-    )
-    monkeypatch.setattr(
-        private_music,
-        "_clean_private_audio_message",
-        AsyncMock(),
-    )
-    monkeypatch.setattr(
-        private_music,
-        "_probe_private_message_has_audio",
-        AsyncMock(side_effect=probe),
-    )
-    monkeypatch.setattr(private_music, "_LEGACY_PROBE_LIMIT", 8)
-    monkeypatch.setattr(private_music.asyncio, "sleep", AsyncMock())
-
-    await private_music.clear_all_private_music(message)
-
-    target_ids = delete_messages.await_args.args[1]
-    assert 120 in target_ids
-    assert 121 in target_ids
-    assert 122 in target_ids
-    assert 123 in target_ids
-    assert 124 not in target_ids
-    assert 125 in target_ids
-    assert 126 in target_ids
-    assert 127 in target_ids
-    assert 128 in target_ids
 
 
 def test_removed_private_commands_are_not_registered():
