@@ -81,14 +81,14 @@ async def _ensure_group_record(message: types.Message) -> None:
     )
 
 
-async def _is_monitor_group(message: types.Message) -> bool:
+async def _is_monitor_group(message: types.Message) -> bool | None:
     """Never clean or register the admin monitoring destination as a music room."""
     try:
         monitor_id, _title = await get_admin_music_monitor_group()
         return monitor_id is not None and int(monitor_id) == int(message.chat.id)
     except Exception as exc:
         logging.warning("Cannot check admin monitor group: %s", exc)
-        return True  # Fail closed: do not risk deleting monitor logs.
+        return None  # Unknown is never permission to clean OR reveal admin stats.
 
 
 async def _connected(message: types.Message) -> bool:
@@ -150,8 +150,8 @@ async def _reply_tracked(
 async def connect_music_group(message: types.Message) -> None:
     if not await _require_group(message):
         return
-    if await _is_monitor_group(message):
-        logging.warning("Music room connection rejected for monitor group=%s", message.chat.id)
+    if await _is_monitor_group(message) is not False:
+        logging.warning("Music room connection rejected/uncertain for group=%s", message.chat.id)
         return
     await _ensure_group_record(message)
     await _remember_command(message)
@@ -324,7 +324,7 @@ async def clear_all_group_text(message: types.Message) -> None:
     # Members may request cleanup; the bot still needs Delete Messages permission.
     if not await _require_group(message):
         return
-    if await _is_monitor_group(message):
+    if await _is_monitor_group(message) is not False:
         return
     if not await _connected(message):
         await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
@@ -343,7 +343,7 @@ async def total_users_music(message: types.Message) -> None:
     user_id = getattr(getattr(message, "from_user", None), "id", None)
     if not is_admin_music_owner(user_id):
         return
-    if not _is_group(message) or not await _is_monitor_group(message):
+    if not _is_group(message) or await _is_monitor_group(message) is not True:
         return
     try:
         unique_users = await count_unique_music_audio_users()
