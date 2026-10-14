@@ -24,6 +24,7 @@ async def test_group_clearall_reuses_shared_cleanup_without_admin_gate(monkeypat
     admin_gate = AsyncMock(side_effect=AssertionError("member cleanup should not need admin"))
 
     monkeypatch.setattr(group_music, "db", fake_db)
+    monkeypatch.setattr(group_music, "_is_monitor_group", AsyncMock(return_value=False))
     monkeypatch.setattr(group_music, "_require_group_admin", admin_gate)
     monkeypatch.setattr(music_chat_cleanup, "cleanup_music_chat", cleanup)
 
@@ -66,6 +67,7 @@ async def test_connectmusic_can_be_used_by_regular_group_member(monkeypatch):
 
     monkeypatch.setattr(group_music, "db", fake_db)
     monkeypatch.setattr(group_music, "_ensure_group_record", AsyncMock())
+    monkeypatch.setattr(group_music, "_is_monitor_group", AsyncMock(return_value=False))
     monkeypatch.setattr(group_music, "_require_group_admin", admin_gate)
 
     await group_music.connect_music_group(message)
@@ -91,6 +93,7 @@ async def test_group_clearall_requires_connected_music_group(monkeypatch):
     )
     cleanup = AsyncMock()
     monkeypatch.setattr(group_music, "db", db)
+    monkeypatch.setattr(group_music, "_is_monitor_group", AsyncMock(return_value=False))
     monkeypatch.setattr(music_chat_cleanup, "cleanup_music_chat", cleanup)
     await group_music.clear_all_group_text(message)
     cleanup.assert_not_awaited()
