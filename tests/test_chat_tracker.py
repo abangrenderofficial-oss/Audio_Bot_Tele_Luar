@@ -137,3 +137,41 @@ async def test_ensure_group_uses_generated_name():
     assert kwargs["user_id"] == -500
     assert kwargs["user_name"] == "Chat -500"
     assert kwargs["chat_type"] == "public"
+
+
+@pytest.mark.asyncio
+async def test_private_incoming_audio_is_protected_and_tracked():
+    fake_db = FakeDB()
+    fake_db.remember_music_chat_message = AsyncMock()
+    middleware = ChatTrackerMiddleware(database=fake_db)
+    message = SimpleNamespace(
+        chat=build_chat(chat_id=42, chat_type=ChatType.PRIVATE),
+        from_user=build_user(user_id=42),
+        message_id=120,
+        audio=SimpleNamespace(file_unique_id="unique-song"),
+        voice=None,
+        document=None,
+    )
+    await middleware._process_message(message)
+    fake_db.remember_music_chat_message.assert_awaited_once_with(
+        chat_id=42, message_id=120, chat_type="private",
+        is_audio=True, audio_key="telegram:unique-song",
+    )
+
+
+@pytest.mark.asyncio
+async def test_private_incoming_link_is_tracked_for_cleanup():
+    fake_db = FakeDB()
+    fake_db.remember_music_chat_message = AsyncMock()
+    middleware = ChatTrackerMiddleware(database=fake_db)
+    message = SimpleNamespace(
+        chat=build_chat(chat_id=42, chat_type=ChatType.PRIVATE),
+        from_user=build_user(user_id=42),
+        message_id=121, text="https://youtu.be/example",
+        audio=None, voice=None, document=None,
+    )
+    await middleware._process_message(message)
+    fake_db.remember_music_chat_message.assert_awaited_once_with(
+        chat_id=42, message_id=121, chat_type="private",
+        is_audio=False, audio_key=None,
+    )
