@@ -4,7 +4,7 @@
 
 ## Scope of current group cleanup
 
-Removed group-only commands: `/clearlink`, `/playlist`, `/playall`, `/search`, `/playsync`, `/stopsync`. Their group handlers and registered group menu entries are gone. Private-chat `/playall` and `/search` remain unchanged.
+Removed group-only commands: `/clearlink`, `/playlist`, `/playall`, `/search`, `/playsync`, `/stopsync`. Their group handlers and registered group menu entries are gone. Private-chat `/playall` and `/search` are also removed, along with their default command-menu entries.
 
 Retained: `/connectmusic`, `/connectadminmusic` (owner-only), `/clearall`, normal link-to-audio group handling, duplicate checks, audio history and Telegram monitoring. No database schema or existing stored audio has been deleted.
 
@@ -17,6 +17,6 @@ Retained: `/connectmusic`, `/connectadminmusic` (owner-only), `/clearall`, norma
 5. Before starting, verify the **ffmpeg / ffprobe**, **yt-dlp**, and YouTube JavaScript runtime prerequisites on Bot Hosting. The repo's Dockerfile installs OS utilities, but the managed Python runtime has not yet been verified to include them. Do not assume full media-download capability without a preflight.
 6. Use a modest dedicated allocation from the Pro+ resource pool and limit downloader concurrency according to what the plan can support. Confirm logs, Python dependencies and disk usage before opening traffic to users.
 7. Avoid running the *same Telegram bot token* concurrently on old Render hosting and Bot Hosting, especially for long polling. Schedule the cutover only after the new deployment is staged/ready and the old process can be stopped safely.
-8. At the one authorized launch, verify startup, `/connectmusic`, group link -> audio, owner-only `/connectadminmusic`, no old group command menu, and private `/search` and `/playall`. Observe logs after launch.
+8. At the one authorized launch, verify startup, `/connectmusic`, group link -> audio, owner-only `/connectadminmusic`, no old group command menu, and that private `/search` and `/playall` no longer respond. Observe logs after launch.
 
 No hosting deployment, project, resources, ENV or Telegram webhook should be changed in this preparation stage.
