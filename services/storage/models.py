@@ -41,6 +41,7 @@ APP_SCHEMA_TABLES = frozenset(
         "music_group_settings",
         "music_group_tracks",
         "music_group_cleanup_messages",
+        "music_chat_cleanup_messages",
         "download_history",
     }
 )
@@ -189,6 +190,22 @@ class MusicGroupTrack(Base):
     duration_seconds = Column(sa.Float, nullable=True)
     source_message_id = Column(BigInteger, nullable=True)
     audio_message_id = Column(BigInteger, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+
+class MusicChatCleanupMessage(Base):
+    """IDs witnessed in chats; never infer deletion targets from unknown history."""
+
+    __tablename__ = "music_chat_cleanup_messages"
+    __table_args__ = (
+        Index("ix_music_chat_cleanup_type_chat", "chat_type", "chat_id"),
+    )
+
+    chat_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    message_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    chat_type = Column(Text, nullable=False)
+    is_audio = Column(Boolean, nullable=False, default=False)
+    audio_key = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
 
