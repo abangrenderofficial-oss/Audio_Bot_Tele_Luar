@@ -11,22 +11,34 @@ from collections import defaultdict
 
 from app_context import bot, db
 from services.logger import logger as logging
-from services.music_group_dedupe import dedupe_music_group_tracks
+from services.music_group_dedupe import identity_keys_for_track
 
 logging = logging.bind(service="music_chat_cleanup")
 
 
 def cleanup_plan(tracks: list, observed: list) -> tuple[set[int], set[int], list]:
     """Return (all_audio_ids, duplicate_audio_ids, keeper tracks). Pure logic."""
-    keeper_tracks, duplicate_tracks = dedupe_music_group_tracks(tracks)
-    all_audio_ids = {
-        int(t.audio_message_id) for t in tracks
-        if getattr(t, "audio_message_id", None) is not None
-    }
-    duplicates = {
-        int(t.audio_message_id) for t in duplicate_tracks
-        if getattr(t, "audio_message_id", None) is not None
-    }
+    # Only a shared source identity or Telegram file ID confirms a duplicate.
+    # Matching title + performer alone would wrongly delete different recordings.
+    keeper_tracks = []
+    duplicates: set[int] = set()
+    strong_seen: set[tuple[str, ...]] = set()
+    all_audio_ids: set[int] = set()
+    for track in tracks:
+        mid = getattr(track, "audio_message_id", None)
+        if mid is None:
+            continue
+        mid = int(mid)
+        all_audio_ids.add(mid)
+        keys = {
+            key for key in identity_keys_for_track(track)
+            if key and key[0] in {"source", "file"}
+        }
+        if keys and keys.intersection(strong_seen):
+            duplicates.add(mid)
+        else:
+            keeper_tracks.append(track)
+            strong_seen.update(keys)
 
     # User-sent audio/voice/audio documents: exact same Telegram file.
     # Do not guess from filenames or titles alone.
