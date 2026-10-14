@@ -291,7 +291,7 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 or getattr(audio, "performer", None)
             )
             private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
-            await record_private_audio(
+            saved = await record_private_audio(
                 message,
                 service="soundcloud",
                 source_url=source_url,
@@ -301,15 +301,17 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                 performer=private_performer,
                 duration=private_duration,
             )
-            await mirror_private_audio_to_admin_group(
-                message,
-                file_id=getattr(audio, "file_id", None),
-                source_message_id=getattr(sent, "message_id", None),
-                title=private_title,
-                performer=private_performer,
-                duration=private_duration,
-                platform="SoundCloud",
-            )
+            if saved:
+                await mirror_private_audio_to_admin_group(
+                    message,
+                    file_id=getattr(audio, "file_id", None),
+                    source_message_id=getattr(sent, "message_id", None),
+                    title=private_title,
+                    performer=private_performer,
+                    duration=private_duration,
+                    platform="SoundCloud",
+                    source_url=source_url,
+                )
             return sent
 
         audio_sender = (
@@ -425,7 +427,7 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                     duration=duration,
                 )
                 if not group_music_connected:
-                    await record_private_audio(
+                    saved = await record_private_audio(
                         message,
                         service="soundcloud",
                         source_url=source_url,
@@ -435,15 +437,17 @@ async def process_soundcloud(message: types.Message, direct_url: Optional[str] =
                         performer=performer,
                         duration=duration,
                     )
-                    await mirror_private_audio_to_admin_group(
-                        message,
-                        file_id=file_id,
-                        source_message_id=fast_result.get("message_id"),
-                        title=title,
-                        performer=performer,
-                        duration=duration,
-                        platform="SoundCloud",
-                    )
+                    if saved:
+                        await mirror_private_audio_to_admin_group(
+                            message,
+                            file_id=file_id,
+                            source_message_id=message_id,
+                            title=title,
+                            performer=performer,
+                            duration=duration,
+                            platform="SoundCloud",
+                            source_url=source_url,
+                        )
                 request_lease.mark_success()
                 await maybe_delete_user_message(
                     message,
