@@ -30,3 +30,14 @@ No hosting deployment, project, resources, ENV or Telegram webhook should be cha
 - Manual `/clearall` invokes the same cleanup engine immediately in private and connected group chats; group members can call it but the bot must have Delete Messages rights. Manual runs also normalise the retained audio title/caption.
 - Telegram normally disallows deleting messages older than 48 hours, and bot privacy mode in groups may prevent observation of ordinary user messages. Unseen history cannot safely be auto-deleted; no unsafe numeric-ID sweeps.
 - Schema adds `music_chat_cleanup_messages` via Alembic migration 017. The migration is applied only when the bot is launched with the approved deployment. Ensure PostgreSQL backup and migration readiness before the one-time cutover.
+
+## Admin Music Monitor isolation + unique users
+
+- `/connectmusic` is the ONLY group mode eligible for music group `/clearall` and automatic chat cleanup. Private chats remain eligible for the separate private auto-clean schedule.
+- `/connectadminmusic` is owner-only, configures exactly one admin monitoring destination and **never** runs group auto-clean or group `/clearall`. This group may safely also host MediaX's bot/logs. Connecting as admin monitor deactivates any old music-room mode; cleaning additionally checks monitor ID as a hard safety gate.
+- Each successful **nonduplicate** private MusiX audio delivery is mirrored to the admin group. Each copy includes Telegram user ID, username, name, source platform, original source link and date/time (Asia/Kuala_Lumpur, derived from the request message timestamp). A copy failure does not fabricate a success or interrupt the user audio.
+- Private music success events are logged to `music_private_audio_deliveries` (Alembic 018) with composite key `(user_id, audio_message_id)` for retry idempotency.
+- Hidden owner-only `/totalusermusic` works exclusively in the configured admin monitor group and counts `COUNT(DISTINCT user_id)` from this **MusiX-only** table, not the Telegram group messages, all database users, MediaX users, or unsuccessful downloads.
+- **Historical note:** The count starts when this dedicated usage ledger is deployed. Do not claim it includes earlier MusiX usage without a verified backfill from MusiX-exclusive audio events.
+- Never import MediaX user tables or its analytics. Mixing two bot log streams in one Telegram admin group does not change the source of the count.
+- Before launch, exercise `/connectadminmusic` in a group shared with MediaX and verify group auto-clean and `/clearall` cannot erase any monitoring messages. Verify `/totalusermusic` is silent for non-owners and when issued outside the connected monitor group.
