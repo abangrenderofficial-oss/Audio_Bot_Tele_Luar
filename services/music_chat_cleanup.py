@@ -34,18 +34,24 @@ def cleanup_plan(tracks: list, observed: list) -> tuple[set[int], set[int], list
         (m for m in observed if getattr(m, "is_audio", False)),
         key=lambda m: int(m.message_id),
     )
-    seen_keys: dict[str, int] = {}
+    keeper_ids = {
+        int(t.audio_message_id) for t in keeper_tracks
+        if getattr(t, "audio_message_id", None) is not None
+    }
+    by_audio_key: dict[str, list[int]] = defaultdict(list)
     for item in observed_audio:
         mid = int(item.message_id)
         all_audio_ids.add(mid)
         key = str(getattr(item, "audio_key", "") or "").strip()
-        if key and key in seen_keys:
-            # If it is already known to be the keeper of a registered track,
-            # do not remove it based solely on message order.
-            if mid not in {int(t.audio_message_id) for t in keeper_tracks}:
-                duplicates.add(mid)
-        elif key:
-            seen_keys[key] = mid
+        if key:
+            by_audio_key[key].append(mid)
+    for ids in by_audio_key.values():
+        if len(ids) <= 1:
+            continue
+        # Prefer an already registered song keeper; otherwise retain earliest.
+        existing_keeper = sorted(keeper_ids.intersection(ids))
+        selected = existing_keeper[0] if existing_keeper else min(ids)
+        duplicates.update(value for value in ids if value != selected)
     return all_audio_ids, duplicates, keeper_tracks
 
 
@@ -106,7 +112,10 @@ async def cleanup_music_chat(
     if not targets:
         # Still correct existing audio captions, without notifications.
         for track in keepers:
-            await clean_audio(cid, track)
+            try:
+                await clean_audio(cid, track)
+            except Exception as exc:
+                logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
         return {"deleted": 0, "duplicates": 0, "failed": 0}
 
     deleted, failed = await delete_messages(cid, targets)
@@ -115,7 +124,10 @@ async def cleanup_music_chat(
     for track in keepers:
         mid = getattr(track, "audio_message_id", None)
         if mid is None or int(mid) not in deleted:
-            await clean_audio(cid, track)
+            try:
+                await clean_audio(cid, track)
+            except Exception as exc:
+                logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
 
     if deleted:
         remover = getattr(db, "remove_music_chat_cleanup_messages", None)
