@@ -32,9 +32,7 @@ async def test_clear_downloads_and_notify_removes_files(tmp_path, monkeypatch):
     await admin.clear_downloads_and_notify()
 
     assert not any(path.is_file() for path in folder.iterdir())
-    assert len(sent_messages) == 2
-    assert "Removed 2 files" in sent_messages[0][1]
-    assert "0 directories" in sent_messages[0][1]
+    assert sent_messages == []  # routine cleanup must be silent
 
 
 @pytest.mark.asyncio
@@ -64,7 +62,7 @@ async def test_clear_downloads_and_notify_removes_nested_files_and_empty_dirs(tm
 
     assert not old_file.exists()
     assert not nested.exists()
-    assert "Removed 1 files and 2 directories" in sent_messages[0][1]
+    assert sent_messages == []  # results are logged, not DM-ed
 
 
 @pytest.mark.asyncio
@@ -91,8 +89,7 @@ async def test_clear_downloads_and_notify_skips_when_queue_busy(tmp_path, monkey
     await admin.clear_downloads_and_notify()
 
     assert file_path.exists()
-    assert len(sent_messages) == 1
-    assert "Cleanup skipped" in sent_messages[0][1]
+    assert sent_messages == []  # quiet even when queue is busy
 
 
 @pytest.mark.asyncio
