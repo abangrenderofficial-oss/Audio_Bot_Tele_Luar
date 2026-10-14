@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, or_, select, update
 
 from services.logger import logger as logging
 from services.music_group_dedupe import dedupe_music_group_tracks
-from services.storage.models import MusicChatCleanupMessage, MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
+from services.storage.models import AdminMusicMonitorSettings, MusicChatCleanupMessage, MusicGroupCleanupMessage, MusicGroupSettings, MusicGroupTrack
 
 logging = logging.bind(service="db_group_music")
 
@@ -312,12 +312,19 @@ class MusicGroupRepositoryMixin:
                 .where(MusicChatCleanupMessage.chat_type == "private")
                 .distinct()
             )
+            monitor_group = await session.scalar(
+                select(AdminMusicMonitorSettings.group_id).where(
+                    AdminMusicMonitorSettings.id == 1
+                )
+            )
             group_rows = await session.execute(
                 select(MusicGroupSettings.group_id).where(
                     MusicGroupSettings.connected.is_(True)
                 )
             )
-            return [
-                *[(int(value), "private") for value in private_rows.scalars().all()],
-                *[(int(value), "group") for value in group_rows.scalars().all()],
+            private_targets = [(int(value), "private") for value in private_rows.scalars().all()]
+            group_targets = [
+                (int(value), "group") for value in group_rows.scalars().all()
+                if monitor_group is None or int(value) != int(monitor_group)
             ]
+            return private_targets + group_targets
