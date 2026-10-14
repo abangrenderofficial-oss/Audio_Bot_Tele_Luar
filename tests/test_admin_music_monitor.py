@@ -95,8 +95,9 @@ async def test_private_audio_is_mirrored_with_user_details(monkeypatch):
     assert "Username: @listener" in kwargs["caption"]
     assert "ID: 998877" in kwargs["caption"]
     assert "Nama: Test Listener" in kwargs["caption"]
-    assert "Masa: 06/10/2026 21:44" in kwargs["caption"]
-    assert "Platform: Spotify" in kwargs["caption"]
+    assert "Tarikh: 06/10/2026" in kwargs["caption"]
+    assert "Masa: 21:44 (Malaysia)" in kwargs["caption"]
+    assert "Source: Spotify" in kwargs["caption"]
 
 
 @pytest.mark.asyncio
@@ -172,8 +173,9 @@ async def test_private_audio_prefers_copying_exact_delivered_message(monkeypatch
             "👤 Username: @listener\n"
             "🆔 ID: 998877\n"
             "📛 Nama: Test Listener\n"
-            "🕒 Masa: 09/10/2026 11:00\n"
-            "🌐 Platform: YouTube"
+            "📅 Tarikh: 09/10/2026\n"
+            "🕒 Masa: 11:00 (Malaysia)\n"
+            "🌐 Source: YouTube"
         ),
     )
     fake_bot.send_audio.assert_not_awaited()
