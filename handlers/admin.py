@@ -1332,21 +1332,16 @@ async def write_message(message: types.Message, state: FSMContext):
 
 
 async def clear_downloads_and_notify():
+    """Clean temporary download files quietly; no routine admin DM."""
     try:
-        message = await _cleanup_downloads_once()
-    except Exception as e:
-        message = f"An error occurred while clearing the folder: {e}"
+        result = await _cleanup_downloads_once()
+        logging.info("Downloads cleanup: %s", result)
+    except Exception as exc:
+        logging.error("Downloads cleanup failed: %s", exc)
 
     try:
         deleted_files = await db.cleanup_expired_files()
         if deleted_files > 0:
             logging.event("file_cache_cleanup", deleted=deleted_files)
-            message += f"\nCleaned up {deleted_files} expired file cache entries."
-    except Exception as e:
-        logging.error("Failed to clean up expired file cache entries: %s", e)
-
-    for admin_id in ADMINS_UID:
-        try:
-            await bot.send_message(chat_id=admin_id, text=message)
-        except Exception as e:
-            logging.error("Failed to send a message to admin %s: %s", admin_id, e)
+    except Exception as exc:
+        logging.error("Failed to clean up expired file cache entries: %s", exc)
