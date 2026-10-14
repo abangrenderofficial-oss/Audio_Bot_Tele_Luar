@@ -16,7 +16,6 @@ from services.admin_music_monitor import (
 from services.logger import logger as logging
 from services.music_group_dedupe import (
     clean_music_title,
-    dedupe_music_group_tracks,
 )
 
 logging = logging.bind(service="group_music")
@@ -299,95 +298,15 @@ async def _clean_group_audio_message(
 
 @router.message(Command("clearall"))
 async def clear_all_group_text(message: types.Message) -> None:
+    # Members may request cleanup; the bot still needs Delete Messages permission.
     if not await _require_group(message):
         return
-    await _remember_command(message)
-    if not await _require_group_admin(message):
-        return
     if not await _connected(message):
-        await _reply_tracked(
-            message,
-            "Music Group belum connected. Guna /connectmusic dulu.",
-        )
+        await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
+    from services.music_chat_cleanup import cleanup_music_chat
 
-    raw_lister = getattr(db, "list_music_group_tracks_raw", None)
-    if callable(raw_lister):
-        raw_tracks = list(await raw_lister(message.chat.id))
-    else:
-        raw_tracks = list(await db.list_music_group_tracks(message.chat.id))
-
-    tracks, _duplicate_tracks = dedupe_music_group_tracks(raw_tracks)
-    # /clearall is text/link cleanup only. Preserve EVERY audio message we
-    # know about, including older duplicate songs. Duplicate prevention is
-    # handled when a new song is sent, not by /clearall.
-    audio_message_ids = {
-        int(track.audio_message_id)
-        for track in raw_tracks
-        if getattr(track, "audio_message_id", None) is not None
-    }
-
-    cleanup_getter = getattr(db, "get_music_group_cleanup_message_ids", None)
-    tracked_ids = set(
-        await cleanup_getter(message.chat.id)
-        if callable(cleanup_getter)
-        else []
-    )
-    source_ids = set(await db.get_music_group_source_message_ids(message.chat.id))
-    current_message_id = int(message.message_id)
-
-    # Render free restarts wipe the in-memory cleanup ledger, so /clearall
-    # cannot rely on tracked ids alone. Sweep the recent message-id range and
-    # explicitly preserve every song-audio message stored in the persistent
-    # Music Group playlist. This catches bot text, commands, link previews,
-    # failed-link replies and ordinary group text even after a redeploy.
-    known_ids = (
-        set(audio_message_ids)
-        | set(source_ids)
-        | set(tracked_ids)
-        | {current_message_id}
-    )
-    earliest_known = min(known_ids) if known_ids else current_message_id
-    sweep_floor = max(
-        1,
-        max(
-            current_message_id - _CLEARALL_SWEEP_LIMIT,
-            earliest_known - _CLEARALL_SWEEP_MARGIN,
-        ),
-    )
-    sweep_ids = set(range(sweep_floor, current_message_id + 1))
-
-    # Explicit ids are still included when they fall just outside the sweep.
-    # Known audio ids are never sent to Telegram's delete API.
-    target_ids = sweep_ids | tracked_ids | source_ids | {current_message_id}
-    target_ids.difference_update(audio_message_ids)
-
-    deleted, failed = await _delete_group_messages(
-        message.chat.id,
-        target_ids,
-    )
-
-    for track in raw_tracks:
-        await _clean_group_audio_message(message.chat.id, track)
-
-    deleted_source_ids = sorted(source_ids.intersection(deleted))
-    if deleted_source_ids:
-        await db.mark_music_group_links_cleared(
-            message.chat.id,
-            deleted_source_ids,
-        )
-
-    cleanup_remover = getattr(db, "remove_music_group_cleanup_messages", None)
-    if callable(cleanup_remover) and deleted:
-        await cleanup_remover(message.chat.id, sorted(deleted))
-
-    logging.info(
-        "Group clearall complete: group=%s sweep=%s-%s deleted=%s failed=%s "
-        "audio_preserved=%s",
-        message.chat.id,
-        sweep_floor,
-        current_message_id,
-        len(deleted),
-        len(failed),
-        len(audio_message_ids),
+    await cleanup_music_chat(
+        message.chat.id, chat_type="group",
+        command_message_id=message.message_id,
     )
