@@ -85,6 +85,7 @@ async def test_private_mirror_records_only_musix_success_and_full_source(monkeyp
         title="An original music title",
         platform="TikTok",
         source_url="https://www.tiktok.com/@example/video/123",
+        delivered_at=message.date,
     )
     record.assert_awaited_once_with(user_id=8855, audio_message_id=100, platform="TikTok")
     caption = copy.await_args.kwargs["caption"]
