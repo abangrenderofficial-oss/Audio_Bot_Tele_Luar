@@ -41,12 +41,13 @@ def test_removed_group_handlers_are_not_registered():
     }.isdisjoint(names)
 
 
-def test_private_search_and_playall_stay_available():
+def test_private_search_and_playall_are_removed():
     names = _registered_callbacks(private_music.router)
-    assert "play_all_private_music" in names
-    assert "search_private_music" in names
+    assert {"play_all_private_music", "search_private_music"}.isdisjoint(names)
+    assert "clear_all_private_music" in names
     default_names = {command["command"] for command in BOT_COMMANDS}
-    assert {"search", "playall"}.issubset(default_names)
+    assert {"search", "playall"}.isdisjoint(default_names)
+    assert {"start", "help", "clearall"}.issubset(default_names)
 
 
 def test_group_audio_registry_and_cleanup_remain_available():
