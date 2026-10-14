@@ -625,7 +625,7 @@ async def process_music_link(
             or getattr(audio, "performer", None)
         )
         private_duration = getattr(audio, "duration", None) or kwargs.get("duration")
-        await record_private_audio(
+        saved = await record_private_audio(
             message,
             service=service_name,
             source_url=source_url,
@@ -635,15 +635,17 @@ async def process_music_link(
             performer=private_performer,
             duration=private_duration,
         )
-        await mirror_private_audio_to_admin_group(
-            message,
-            file_id=getattr(audio, "file_id", None),
-            source_message_id=getattr(sent, "message_id", None),
-            title=private_title,
-            performer=private_performer,
-            duration=private_duration,
-            platform=monitor_platform,
-        )
+        if saved:
+            await mirror_private_audio_to_admin_group(
+                message,
+                file_id=getattr(audio, "file_id", None),
+                source_message_id=getattr(sent, "message_id", None),
+                title=private_title,
+                performer=private_performer,
+                duration=private_duration,
+                platform=monitor_platform,
+                source_url=source_url,
+            )
         return sent
 
     audio_sender = (
@@ -973,7 +975,7 @@ async def process_music_link(
                         business_connection_id=business_id,
                     )
                     if not group_music_connected:
-                        await record_private_audio(
+                        saved = await record_private_audio(
                             message,
                             service="youtube",
                             source_url=source_url,
@@ -983,15 +985,17 @@ async def process_music_link(
                             performer=fast_performer,
                             duration=fast_duration,
                         )
-                        await mirror_private_audio_to_admin_group(
-                            message,
-                            file_id=fast_result.get("file_id"),
-                            source_message_id=fast_result.get("message_id"),
-                            title=fast_title,
-                            performer=fast_performer,
-                            duration=fast_duration,
-                            platform="YouTube",
-                        )
+                        if saved:
+                            await mirror_private_audio_to_admin_group(
+                                message,
+                                file_id=fast_result.get("file_id"),
+                                source_message_id=fast_result.get("message_id"),
+                                title=fast_title,
+                                performer=fast_performer,
+                                duration=fast_duration,
+                                platform="YouTube",
+                                source_url=source_url,
+                            )
 
                     if (
                         shared_fast_future is not None
@@ -1212,7 +1216,7 @@ async def process_music_link(
                         business_connection_id=business_id,
                     )
                     if not group_music_connected:
-                        await record_private_audio(
+                        saved = await record_private_audio(
                             message,
                             service=service_name,
                             source_url=source_url,
@@ -1222,15 +1226,17 @@ async def process_music_link(
                             performer=social_performer,
                             duration=social_duration,
                         )
-                        await mirror_private_audio_to_admin_group(
-                            message,
-                            file_id=social_result.get("file_id"),
-                            source_message_id=social_result.get("message_id"),
-                            title=social_title,
-                            performer=social_performer,
-                            duration=social_duration,
-                            platform=monitor_platform,
-                        )
+                        if saved:
+                            await mirror_private_audio_to_admin_group(
+                                message,
+                                file_id=social_result.get("file_id"),
+                                source_message_id=social_result.get("message_id"),
+                                title=social_title,
+                                performer=social_performer,
+                                duration=social_duration,
+                                platform=monitor_platform,
+                                source_url=source_url,
+                            )
 
                     if (
                         shared_social_future is not None
