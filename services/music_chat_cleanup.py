@@ -82,6 +82,16 @@ async def cleanup_music_chat(
     private = chat_type == "private"
 
     if not private:
+        # Explicitly exempt /connectadminmusic even when legacy /connectmusic
+        # flags remain or someone accidentally issued both commands.
+        from services.admin_music_monitor import get_admin_music_monitor_group
+        try:
+            monitor_id, _ = await get_admin_music_monitor_group()
+        except Exception as exc:
+            logging.warning("Monitor lookup unavailable; skip group cleanup: %s", exc)
+            return {"deleted": 0, "duplicates": 0, "failed": 0}
+        if monitor_id is not None and int(monitor_id) == cid:
+            return {"deleted": 0, "duplicates": 0, "failed": 0}
         connected = await db.is_music_group_connected(cid)
         if not connected:
             return {"deleted": 0, "duplicates": 0, "failed": 0}
