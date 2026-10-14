@@ -184,3 +184,54 @@ async def test_failed_counter_insert_does_not_block_admin_audio_copy(monkeypatch
         message, file_id="telegram-file", source_message_id=24, platform="YouTube",
     )
     copy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_admin_monitor_id_lookup_failure_never_exposes_user_count(monkeypatch):
+    msg = MonitorMessage()
+    counter = AsyncMock()
+    monkeypatch.setattr(group_music, "count_unique_music_audio_users", counter)
+    monkeypatch.setattr(group_music, "_is_monitor_group", AsyncMock(return_value=None))
+    await group_music.total_users_music(msg)
+    counter.assert_not_awaited()
+    msg.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_autoclean_target_query_excludes_monitor_even_if_legacy_connected():
+    from services.storage.music_group_repository import MusicGroupRepositoryMixin
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return list(self.values)
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return Result([100, 101] if self.calls == 1 else [-100999, -100123])
+
+        async def scalar(self, _stmt):
+            return -100999
+
+    class FakeRepo(MusicGroupRepositoryMixin):
+        def SessionLocal(self):
+            return Session()
+
+    targets = await FakeRepo().list_music_chat_cleanup_targets()
+    assert targets == [(100, "private"), (101, "private"), (-100123, "group")]
+    assert (-100999, "group") not in targets
