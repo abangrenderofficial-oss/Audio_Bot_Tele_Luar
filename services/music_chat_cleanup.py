@@ -38,7 +38,7 @@ def cleanup_plan(tracks: list, observed: list) -> tuple[set[int], set[int], list
             duplicates.add(mid)
         else:
             keeper_tracks.append(track)
-            strong_seen.update(keys)
+        strong_seen.update(keys)
 
     # User-sent audio/voice/audio documents: exact same Telegram file.
     # Do not guess from filenames or titles alone.
@@ -64,6 +64,10 @@ def cleanup_plan(tracks: list, observed: list) -> tuple[set[int], set[int], list
         existing_keeper = sorted(keeper_ids.intersection(ids))
         selected = existing_keeper[0] if existing_keeper else min(ids)
         duplicates.update(value for value in ids if value != selected)
+    keeper_tracks = [
+        track for track in keeper_tracks
+        if int(track.audio_message_id) not in duplicates
+    ]
     return all_audio_ids, duplicates, keeper_tracks
 
 
