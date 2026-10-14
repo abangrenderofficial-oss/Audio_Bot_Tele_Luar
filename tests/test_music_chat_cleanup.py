@@ -83,6 +83,8 @@ async def test_private_cleanup_deletes_observed_text_and_one_duplicate_only(monk
 @pytest.mark.asyncio
 async def test_connected_group_cleanup_and_monitor_exclusion(monkeypatch):
     from handlers import group_music
+    from services import admin_music_monitor
+    monkeypatch.setattr(admin_music_monitor, "get_admin_music_monitor_group", AsyncMock(return_value=(None, None)))
 
     mock_db = SimpleNamespace(
         is_music_group_connected=AsyncMock(side_effect=[False, True]),
@@ -125,3 +127,20 @@ async def test_daily_autoclean_does_not_send_any_chat_message(monkeypatch):
     assert chat_cleanup.await_count == 2
     chat_cleanup.assert_any_await(101, chat_type="private")
     chat_cleanup.assert_any_await(-100, chat_type="group")
+
+
+@pytest.mark.asyncio
+async def test_admin_monitor_exempt_even_when_legacy_music_group_flag_is_connected(monkeypatch):
+    from services import admin_music_monitor
+
+    monkeypatch.setattr(
+        admin_music_monitor, "get_admin_music_monitor_group",
+        AsyncMock(return_value=(-100999, "Shared MediaX + MusiX monitor")),
+    )
+    mock_db = SimpleNamespace(
+        is_music_group_connected=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(cleanup, "db", mock_db)
+    result = await cleanup.cleanup_music_chat(-100999, chat_type="group", command_message_id=55)
+    assert result == {"deleted": 0, "duplicates": 0, "failed": 0}
+    mock_db.is_music_group_connected.assert_not_awaited()
