@@ -11,6 +11,8 @@ from app_context import bot, db
 from handlers.commands import update_info
 from services.admin_music_monitor import (
     is_admin_music_owner,
+    get_admin_music_monitor_group,
+    count_unique_music_audio_users,
     set_admin_music_monitor_group,
 )
 from services.logger import logger as logging
@@ -79,6 +81,16 @@ async def _ensure_group_record(message: types.Message) -> None:
     )
 
 
+async def _is_monitor_group(message: types.Message) -> bool:
+    """Never clean or register the admin monitoring destination as a music room."""
+    try:
+        monitor_id, _title = await get_admin_music_monitor_group()
+        return monitor_id is not None and int(monitor_id) == int(message.chat.id)
+    except Exception as exc:
+        logging.warning("Cannot check admin monitor group: %s", exc)
+        return True  # Fail closed: do not risk deleting monitor logs.
+
+
 async def _connected(message: types.Message) -> bool:
     checker = getattr(db, "is_music_group_connected", None)
     if not callable(checker):
@@ -138,6 +150,9 @@ async def _reply_tracked(
 async def connect_music_group(message: types.Message) -> None:
     if not await _require_group(message):
         return
+    if await _is_monitor_group(message):
+        logging.warning("Music room connection rejected for monitor group=%s", message.chat.id)
+        return
     await _ensure_group_record(message)
     await _remember_command(message)
 
@@ -187,6 +202,14 @@ async def connect_admin_music_monitor(message: types.Message) -> None:
             parse_mode="HTML",
         )
         return
+
+    # If a prior /connectmusic was used here, turn it off. Monitoring always
+    # overrides music-room/cleanup behaviour for the same Telegram group.
+    try:
+        if await db.is_music_group_connected(message.chat.id):
+            await db.set_music_group_connected(message.chat.id, connected=False)
+    except Exception as exc:
+        logging.warning("Disabling music-room mode for monitor group failed: %s", exc)
 
     await _reply_tracked(
         message,
@@ -301,6 +324,8 @@ async def clear_all_group_text(message: types.Message) -> None:
     # Members may request cleanup; the bot still needs Delete Messages permission.
     if not await _require_group(message):
         return
+    if await _is_monitor_group(message):
+        return
     if not await _connected(message):
         await _reply_tracked(message, "Music Group belum connected. Guna /connectmusic dulu.")
         return
@@ -309,4 +334,28 @@ async def clear_all_group_text(message: types.Message) -> None:
     await cleanup_music_chat(
         message.chat.id, chat_type="group",
         command_message_id=message.message_id,
+    )
+
+
+@router.message(Command("totalusermusic"))
+async def total_users_music(message: types.Message) -> None:
+    """Only owner, only inside /connectadminmusic destination, never MediaX."""
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if not is_admin_music_owner(user_id):
+        return
+    if not _is_group(message) or not await _is_monitor_group(message):
+        return
+    try:
+        unique_users = await count_unique_music_audio_users()
+    except Exception as exc:
+        logging.error("MusiX unique audio user count failed: %s", exc)
+        await message.reply("⚠️ Statistik MusiX belum tersedia. Semak database MusiX.")
+        return
+    await message.reply(
+        f"🎵 <b>Total User MusiX</b>\n"
+        f"👥 Pengguna unik yang berjaya menerima audio: <b>{unique_users:,}</b>\n"
+        "🆔 Dikira berdasarkan Telegram user ID berlainan.\n"
+        "Hanya audio dalam private chat MusiX, bukan MediaX.\n"
+        "Bermula sejak fungsi rekod MusiX ini diaktifkan.",
+        parse_mode="HTML",
     )
