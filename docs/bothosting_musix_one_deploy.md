@@ -20,3 +20,13 @@ Retained: `/connectmusic`, `/connectadminmusic` (owner-only), `/clearall`, norma
 8. At the one authorized launch, verify startup, `/connectmusic`, group link -> audio, owner-only `/connectadminmusic`, no old group command menu, and that private `/search` and `/playall` no longer respond. Observe logs after launch.
 
 No hosting deployment, project, resources, ENV or Telegram webhook should be changed in this preparation stage.
+
+## Quiet chat cleanup (prepared; NOT LIVE YET)
+
+- Automatic cleanup runs every day at 00:15 **server time**, separately from temporary download-file cleanup at 00:00. Both only write to server logs, never direct messages.
+- Applies to private chats that have supplied messages since the cleanup registry was installed, and groups explicitly connected with `/connectmusic`. The `/connectadminmusic` monitoring group remains excluded unless separately connected for music.
+- Incoming and outgoing messages are recorded as text/non-audio or audio/voice/audio document. The cleanup removes recorded text, commands, source links and status messages; never guesses unknown Telegram history IDs.
+- Music track registry protects bot-generated audios and their captions. Exact file IDs protect user-uploaded audio. Same-song duplicates in the music registry, and exact-file duplicates, are removed where Telegram permits deletion; oldest/known registered keeper remains.
+- Manual `/clearall` invokes the same cleanup engine immediately in private and connected group chats; group members can call it but the bot must have Delete Messages rights. Manual runs also normalise the retained audio title/caption.
+- Telegram normally disallows deleting messages older than 48 hours, and bot privacy mode in groups may prevent observation of ordinary user messages. Unseen history cannot safely be auto-deleted; no unsafe numeric-ID sweeps.
+- Schema adds `music_chat_cleanup_messages` via Alembic migration 017. The migration is applied only when the bot is launched with the approved deployment. Ensure PostgreSQL backup and migration readiness before the one-time cutover.
