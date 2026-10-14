@@ -15,58 +15,24 @@ class DummyMessage:
 
 
 @pytest.mark.asyncio
-async def test_clearall_sweeps_untracked_text_and_preserves_playlist_audio(monkeypatch):
+async def test_group_clearall_reuses_shared_cleanup_without_admin_gate(monkeypatch):
+    from services import music_chat_cleanup
+
     message = DummyMessage()
-    message.message_id = 220
-    fake_db = SimpleNamespace(
-        is_music_group_connected=AsyncMock(return_value=True),
-        list_music_group_tracks=AsyncMock(
-            return_value=[
-                SimpleNamespace(audio_message_id=200),
-                SimpleNamespace(audio_message_id=201),
-            ]
-        ),
-        get_music_group_cleanup_message_ids=AsyncMock(return_value=[101, 102, 200]),
-        get_music_group_source_message_ids=AsyncMock(return_value=[103]),
-        mark_music_group_links_cleared=AsyncMock(),
-        remove_music_group_cleanup_messages=AsyncMock(),
-    )
-    fake_bot = SimpleNamespace(
-        delete_messages=AsyncMock(return_value=True),
-        delete_message=AsyncMock(),
-    )
+    fake_db = SimpleNamespace(is_music_group_connected=AsyncMock(return_value=True))
+    cleanup = AsyncMock(return_value={"deleted": 2, "duplicates": 0, "failed": 0})
+    admin_gate = AsyncMock(side_effect=AssertionError("member cleanup should not need admin"))
 
     monkeypatch.setattr(group_music, "db", fake_db)
-    monkeypatch.setattr(group_music, "bot", fake_bot)
-    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_LIMIT", 20)
-    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_MARGIN", 3)
-    monkeypatch.setattr(
-        group_music,
-        "_require_group_admin",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(group_music.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(group_music, "_require_group_admin", admin_gate)
+    monkeypatch.setattr(music_chat_cleanup, "cleanup_music_chat", cleanup)
 
     await group_music.clear_all_group_text(message)
 
-    deleted_ids = {
-        message_id
-        for call in fake_bot.delete_messages.await_args_list
-        for message_id in call.kwargs["message_ids"]
-    }
-    # Explicit tracked/source ids survive deploy gaps and the range sweep also
-    # catches untracked bot errors/text between the song audios and /clearall.
-    assert {101, 102, 103}.issubset(deleted_ids)
-    assert set(range(202, 221)).issubset(deleted_ids)
-    assert 200 not in deleted_ids
-    assert 201 not in deleted_ids
-    fake_bot.delete_message.assert_not_awaited()
-
-    fake_db.mark_music_group_links_cleared.assert_awaited_once_with(
-        message.chat.id,
-        [103],
+    admin_gate.assert_not_awaited()
+    cleanup.assert_awaited_once_with(
+        message.chat.id, chat_type="group", command_message_id=message.message_id,
     )
-    fake_db.remove_music_group_cleanup_messages.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -115,87 +81,17 @@ async def test_connectmusic_can_be_used_by_regular_group_member(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clearall_preserves_duplicate_audio_and_cleans_old_quality_caption(monkeypatch):
+async def test_group_clearall_requires_connected_music_group(monkeypatch):
+    from services import music_chat_cleanup
     message = DummyMessage()
-    message.message_id = 220
-    raw_tracks = [
-        SimpleNamespace(
-            audio_message_id=180,
-            service="youtube",
-            source_url="https://youtu.be/Ftffph3fVEs",
-            title="énau feat. Ari Lesmana - Sesi Potret | Lirik",
-            performer="HX Radio",
-            telegram_file_id="youtube-file",
-            duration_seconds=240,
-        ),
-        SimpleNamespace(
-            audio_message_id=200,
-            service="spotify",
-            source_url="https://open.spotify.com/track/13KXgSl4vs7h8y2G7V6GrB",
-            title="mejikuhibiniu",
-            performer="Tenxi, Suisei, Jemsii",
-            telegram_file_id="spotify-file-a",
-            duration_seconds=204,
-        ),
-        SimpleNamespace(
-            audio_message_id=201,
-            service="spotify",
-            source_url="https://open.spotify.com/track/13KXgSl4vs7h8y2G7V6GrB",
-            title="mejikuhibiniu",
-            performer="Tenxi, Suisei, Jemsii",
-            telegram_file_id="spotify-file-b",
-            duration_seconds=204,
-        ),
-    ]
-    fake_db = SimpleNamespace(
-        is_music_group_connected=AsyncMock(return_value=True),
-        list_music_group_tracks_raw=AsyncMock(return_value=raw_tracks),
-        get_music_group_cleanup_message_ids=AsyncMock(return_value=[]),
-        get_music_group_source_message_ids=AsyncMock(return_value=[]),
-        mark_music_group_links_cleared=AsyncMock(),
-        remove_music_group_cleanup_messages=AsyncMock(),
+    message.reply = AsyncMock(return_value=SimpleNamespace(message_id=1000))
+    db = SimpleNamespace(
+        is_music_group_connected=AsyncMock(return_value=False),
+        add_music_group_cleanup_message=AsyncMock(),
     )
-    fake_bot = SimpleNamespace(
-        delete_messages=AsyncMock(return_value=True),
-        delete_message=AsyncMock(),
-        edit_message_media=AsyncMock(return_value=True),
-        edit_message_caption=AsyncMock(),
-    )
-
-    monkeypatch.setattr(group_music, "db", fake_db)
-    monkeypatch.setattr(group_music, "bot", fake_bot)
-    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_LIMIT", 50)
-    monkeypatch.setattr(group_music, "_CLEARALL_SWEEP_MARGIN", 3)
-    monkeypatch.setattr(
-        group_music,
-        "_require_group_admin",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(group_music.asyncio, "sleep", AsyncMock())
-
+    cleanup = AsyncMock()
+    monkeypatch.setattr(group_music, "db", db)
+    monkeypatch.setattr(music_chat_cleanup, "cleanup_music_chat", cleanup)
     await group_music.clear_all_group_text(message)
-
-    deleted_ids = {
-        message_id
-        for call in fake_bot.delete_messages.await_args_list
-        for message_id in call.kwargs["message_ids"]
-    }
-    assert 180 not in deleted_ids
-    assert 200 not in deleted_ids
-    assert 201 not in deleted_ids
-
-    edited_message_ids = {
-        call.kwargs["message_id"]
-        for call in fake_bot.edit_message_media.await_args_list
-    }
-    assert {180, 200, 201}.issubset(edited_message_ids)
-
-    youtube_edit = next(
-        call
-        for call in fake_bot.edit_message_media.await_args_list
-        if call.kwargs["message_id"] == 180
-    )
-    media = youtube_edit.kwargs["media"]
-    assert media.title == "énau feat. Ari Lesmana - Sesi Potret"
-    assert "Original Quality" not in (media.caption or "")
-    assert "Lirik" not in (media.caption or "")
+    cleanup.assert_not_awaited()
+    message.reply.assert_awaited_once()
