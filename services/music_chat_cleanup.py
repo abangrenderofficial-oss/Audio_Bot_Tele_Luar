@@ -110,24 +110,26 @@ async def cleanup_music_chat(
     targets = (candidates - all_audio) | duplicates
     targets.discard(0)
     if not targets:
-        # Still correct existing audio captions, without notifications.
-        for track in keepers:
-            try:
-                await clean_audio(cid, track)
-            except Exception as exc:
-                logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
+        # Do not spam Telegram with repeated editMessageMedia calls every night.
+        if command_message_id is not None:
+            for track in keepers:
+                try:
+                    await clean_audio(cid, track)
+                except Exception as exc:
+                    logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
         return {"deleted": 0, "duplicates": 0, "failed": 0}
 
     deleted, failed = await delete_messages(cid, targets)
 
     # Run caption/title cleanup only for surviving keeper messages.
-    for track in keepers:
-        mid = getattr(track, "audio_message_id", None)
-        if mid is None or int(mid) not in deleted:
-            try:
-                await clean_audio(cid, track)
-            except Exception as exc:
-                logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
+    if command_message_id is not None:
+        for track in keepers:
+            mid = getattr(track, "audio_message_id", None)
+            if mid is None or int(mid) not in deleted:
+                try:
+                    await clean_audio(cid, track)
+                except Exception as exc:
+                    logging.warning("Audio caption update failed: chat=%s error=%s", cid, exc)
 
     if deleted:
         remover = getattr(db, "remove_music_chat_cleanup_messages", None)
