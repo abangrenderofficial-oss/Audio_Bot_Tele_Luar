@@ -1,0 +1,10 @@
+# BotHosting Python 3.14 — isolated from the Docker/Render requirements.
+# Keep original dependencies unchanged for Render.
+-r requirements.txt
+
+# Prebuilt FFmpeg + FFprobe (manylinux x86_64) available without root/apt.
+ffmpeg-binaries-compat==1.1.0
+
+# JavaScript runtime needed by yt-dlp on modern YouTube.
+# This is a Python wheel containing the Deno executable; no Node.js hosting needed.
+deno==2.9.7
