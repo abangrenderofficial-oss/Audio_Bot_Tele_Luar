@@ -111,7 +111,6 @@ def test_musix_runtime_schema_rejects_public_and_sql_injection(monkeypatch):
 
 
 def test_musix_ssl_options_use_trusted_asyncpg_sslcontext(monkeypatch):
-    import ssl
     captured: dict[str, object] = {}
     fake_context = SimpleNamespace(check_hostname=True)
     fake_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
