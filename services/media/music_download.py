@@ -1379,6 +1379,10 @@ def _youtube_worker_configured() -> bool:
 
 
 def _youtube_worker_cookie_text() -> str:
+    # Never transmit account session cookies to an external worker by default.
+    # Local yt-dlp still reads its private cookie file directly.
+    if not _env_truthy("MUSIX_YOUTUBE_WORKER_SEND_COOKIES"):
+        return ""
     candidates = [
         (os.getenv("YTDLP_YOUTUBE_COOKIES_FILE") or "").strip(),
         "/tmp/abangrender-youtube.txt",
@@ -1988,9 +1992,29 @@ async def _download_mp3(
     out_template = os.path.join(work_dir, "source.%(ext)s")
 
     if source == "youtube":
-        # YouTube extraction must happen outside Render egress. The external
-        # worker is primary even in low-memory mode. If it fails, only public
-        # relay paths may run on Render; never fall through to direct yt-dlp.
+        # Bot Hosting may extract directly, using its local cookie file and Deno.
+        # On older Render deployments leave this disabled to preserve routing.
+        local_error: Exception | None = None
+        if _env_truthy("MUSIX_YOUTUBE_LOCAL_FIRST"):
+            try:
+                logging.info("Trying Bot Hosting local yt-dlp YouTube audio first")
+                return await asyncio.to_thread(
+                    _run_ytdlp_mp3_sync,
+                    url,
+                    out_template,
+                    bitrate_kbps,
+                    source,
+                )
+            except Exception as exc:
+                local_error = exc
+                logging.warning(
+                    "Bot Hosting local yt-dlp failed; falling back to configured worker: error=%s",
+                    str(exc)[-350:],
+                )
+                _clear_ytdlp_outputs(out_template)
+
+        # Legacy worker and public relays remain available when local extraction
+        # is blocked by a YouTube upstream authentication/IP challenge.
         worker_error: Exception | None = None
 
         if _youtube_worker_configured():
@@ -2060,7 +2084,8 @@ async def _download_mp3(
         except Exception as relay_error:
             _clear_ytdlp_outputs(out_template)
             raise MusicDownloadError(
-                f"External worker: {worker_error}\n"
+                f"Local YouTube: {local_error}\n"
+                f"--- External worker ---\n{worker_error}\n"
                 f"--- Cobalt fallback ---\n{cobalt_error}\n"
                 f"--- Invidious fallback ---\n{invidious_error}\n"
                 f"--- Piped relay fallback ---\n{relay_error}"
