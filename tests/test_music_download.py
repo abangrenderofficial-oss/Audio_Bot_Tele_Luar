@@ -458,6 +458,64 @@ def test_cobalt_music_configured_requires_url_and_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_youtube_download_uses_local_before_worker_when_enabled(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("MUSIX_YOUTUBE_LOCAL_FIRST", "1")
+    monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
+
+    def local(*args):
+        calls.append("local")
+        return str(tmp_path / "source.mp3")
+
+    def worker(*args):
+        raise AssertionError("Local success must not call external worker")
+
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", local)
+    monkeypatch.setattr(music_download, "_run_youtube_worker_mp3_sync", worker)
+    result = await music_download._download_mp3(
+        "https://youtu.be/Ftffph3fVEs", work_dir=str(tmp_path),
+        bitrate_kbps=192, source="youtube",
+    )
+    assert result.endswith("source.mp3")
+    assert calls == ["local"]
+
+
+@pytest.mark.asyncio
+async def test_local_youtube_failure_falls_back_to_worker(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("MUSIX_YOUTUBE_LOCAL_FIRST", "1")
+    monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
+
+    def local(*args):
+        calls.append("local")
+        raise music_download.MusicDownloadError("Sign in to confirm you're not a bot")
+
+    def worker(*args):
+        calls.append("worker")
+        return str(tmp_path / "source.mp3")
+
+    monkeypatch.setattr(music_download, "_run_ytdlp_mp3_sync", local)
+    monkeypatch.setattr(music_download, "_run_youtube_worker_mp3_sync", worker)
+    monkeypatch.setattr(music_download, "_clear_ytdlp_outputs", lambda _: None)
+    result = await music_download._download_mp3(
+        "https://youtu.be/Ftffph3fVEs", work_dir=str(tmp_path),
+        bitrate_kbps=192, source="youtube",
+    )
+    assert result.endswith("source.mp3")
+    assert calls == ["local", "worker"]
+
+
+def test_external_worker_does_not_receive_cookies_without_opt_in(monkeypatch, tmp_path):
+    cookie_file = tmp_path / "youtube.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\\n.local\\tTRUE\\t/\\tTRUE\\t0\\tSID\\ttest-secret\\n")
+    monkeypatch.setenv("YTDLP_YOUTUBE_COOKIES_FILE", str(cookie_file))
+    monkeypatch.delenv("MUSIX_YOUTUBE_WORKER_SEND_COOKIES", raising=False)
+    assert music_download._youtube_worker_cookie_text() == ""
+    monkeypatch.setenv("MUSIX_YOUTUBE_WORKER_SEND_COOKIES", "1")
+    assert "test-secret" in music_download._youtube_worker_cookie_text()
+
+
+@pytest.mark.asyncio
 async def test_youtube_download_prefers_external_worker_when_configured(monkeypatch, tmp_path):
     calls = []
 
