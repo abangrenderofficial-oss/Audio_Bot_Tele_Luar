@@ -77,6 +77,38 @@ def test_database_configures_engine_pool(monkeypatch):
     assert captured["kwargs"]["pool_use_lifo"] is False
 
 
+
+def test_isolated_musix_schema_sets_async_connection_search_path(monkeypatch):
+    captured: dict[str, object] = {}
+    fake_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def fake_create_async_engine(url, **kwargs):
+        captured["kwargs"] = kwargs
+        return fake_engine
+
+    monkeypatch.setenv("MUSIX_DB_SCHEMA", "musix_runtime")
+    monkeypatch.setattr(db_module, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setattr(db_module, "async_sessionmaker", lambda **kwargs: SimpleNamespace(**kwargs))
+    database = db_module.DataBase("postgresql://user:pass@localhost/testdb")
+    assert database.runtime_schema == "musix_runtime"
+    assert captured["kwargs"]["connect_args"]["server_settings"] == {
+        "search_path": "musix_runtime"
+    }
+    assert database._build_alembic_config().attributes["musix_runtime_schema"] == "musix_runtime"
+
+
+def test_musix_runtime_schema_rejects_public_and_sql_injection(monkeypatch):
+    from services.storage.database_url import musix_runtime_schema
+
+    for name in ("public", "auth", "pg_catalog", "musix_runtime;DROP TABLE users", "musix runtime"):
+        monkeypatch.setenv("MUSIX_DB_SCHEMA", name)
+        with pytest.raises(ValueError, match="MUSIX_DB_SCHEMA"):
+            musix_runtime_schema()
+    monkeypatch.setenv("MUSIX_DB_SCHEMA", "musix_runtime")
+    assert musix_runtime_schema() == "musix_runtime"
+
+
+
 def test_database_url_helpers_normalize_postgres_urls():
     async_url = "postgresql+asyncpg://user:pass@localhost/testdb"
     sync_url = "postgresql://user:pass@localhost/testdb"
