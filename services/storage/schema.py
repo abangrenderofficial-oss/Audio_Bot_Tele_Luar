@@ -40,6 +40,7 @@ class SchemaManagerMixin:
         config.set_main_option("script_location", str(services_dir / "alembic"))
         config.set_main_option("sqlalchemy.url", self.sync_url)
         config.attributes["skip_logging_config"] = True
+        config.attributes["musix_runtime_schema"] = getattr(self, "runtime_schema", None)
         return config
 
     async def _get_existing_tables(self) -> set[str]:
