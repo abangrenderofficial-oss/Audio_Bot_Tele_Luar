@@ -517,6 +517,7 @@ def test_external_worker_does_not_receive_cookies_without_opt_in(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_youtube_download_prefers_external_worker_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSIX_YOUTUBE_LOCAL_FIRST", "0")
     calls = []
 
     monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
@@ -551,6 +552,7 @@ async def test_youtube_download_prefers_external_worker_when_configured(monkeypa
 
 @pytest.mark.asyncio
 async def test_youtube_download_falls_back_to_piped_when_worker_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSIX_YOUTUBE_LOCAL_FIRST", "0")
     calls = []
 
     monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: True)
@@ -580,6 +582,7 @@ async def test_youtube_download_falls_back_to_piped_when_worker_fails(monkeypatc
 
 @pytest.mark.asyncio
 async def test_youtube_download_reports_relay_error_without_external_worker(monkeypatch, tmp_path):
+    monkeypatch.setenv("MUSIX_YOUTUBE_LOCAL_FIRST", "0")
     monkeypatch.setattr(music_download, "_youtube_worker_configured", lambda: False)
 
     def fail_relay(*_args, **_kwargs):
