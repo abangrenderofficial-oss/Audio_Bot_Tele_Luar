@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from config import DATABASE_URL, DB_MAX_OVERFLOW, DB_POOL_SIZE, DB_POOL_TIMEOUT
 from services.logger import logger as logging
 from services.storage.analytics_repository import AnalyticsRepositoryMixin
-from services.storage.database_url import to_async_database_url, to_sync_database_url
+from services.storage.database_url import musix_runtime_schema, to_async_database_url, to_sync_database_url
 from services.storage.download_history_repository import DownloadHistoryRepositoryMixin
 from services.storage.music_group_repository import MusicGroupRepositoryMixin
 from services.storage.file_cache_repository import FileCacheRepositoryMixin
@@ -126,6 +126,7 @@ class DataBase(
 
         self.sync_url = to_sync_database_url(self.database_url)
         self.async_url = to_async_database_url(self.database_url)
+        self.runtime_schema = musix_runtime_schema()
 
         self.engine = create_async_engine(
             self.async_url,
@@ -137,6 +138,7 @@ class DataBase(
             max_overflow=max(0, int(DB_MAX_OVERFLOW)),
             pool_timeout=max(1.0, float(DB_POOL_TIMEOUT)),
             pool_use_lifo=False,
+            **({"connect_args": {"server_settings": {"search_path": self.runtime_schema}}} if self.runtime_schema else {}),
         )
         self._dialect_name = self.engine.dialect.name
         self.SessionLocal = async_sessionmaker(
