@@ -109,6 +109,35 @@ def test_musix_runtime_schema_rejects_public_and_sql_injection(monkeypatch):
 
 
 
+
+def test_musix_ssl_options_use_trusted_asyncpg_sslcontext(monkeypatch):
+    import ssl
+    captured: dict[str, object] = {}
+    fake_context = SimpleNamespace(check_hostname=True)
+    fake_engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    def fake_engine_create(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return fake_engine
+
+    monkeypatch.setenv("MUSIX_DB_SCHEMA", "musix_runtime")
+    monkeypatch.setattr(db_module.ssl, "create_default_context", lambda *, cafile: fake_context)
+    monkeypatch.setattr(db_module, "create_async_engine", fake_engine_create)
+    monkeypatch.setattr(db_module, "async_sessionmaker", lambda **kwargs: SimpleNamespace(**kwargs))
+    db_module.DataBase("postgresql://user:pass@hostname:5432/testdb?sslmode=verify-full&sslrootcert=%2Fapp%2Ftrusted-ca.crt")
+    assert captured["url"] == "postgresql+asyncpg://user:pass@hostname:5432/testdb"
+    assert captured["kwargs"]["connect_args"]["ssl"] is fake_context
+    assert captured["kwargs"]["connect_args"]["server_settings"]["search_path"] == "musix_runtime"
+    assert fake_context.check_hostname is True
+
+
+def test_musix_verified_postgres_requires_ca_certificate(monkeypatch):
+    monkeypatch.setenv("MUSIX_DB_SCHEMA", "musix_runtime")
+    with pytest.raises(ValueError, match="sslrootcert"):
+        db_module.DataBase("postgresql://user:pass@hostname/testdb?sslmode=verify-full")
+
+
+
 def test_database_url_helpers_normalize_postgres_urls():
     async_url = "postgresql+asyncpg://user:pass@localhost/testdb"
     sync_url = "postgresql://user:pass@localhost/testdb"
