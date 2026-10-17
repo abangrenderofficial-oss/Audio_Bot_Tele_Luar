@@ -1,3 +1,4 @@
+import os
 import re
 
 
@@ -23,3 +24,19 @@ def resolve_alembic_database_url(
     if not candidate:
         return None
     return to_sync_database_url(candidate)
+
+# The PostgreSQL app schema must never be public: Supabase music-cache lives there.
+# An absent schema preserves existing local/CI database behavior.
+_RESERVED_SCHEMAS = frozenset({
+    "public", "auth", "storage", "realtime", "extensions", "vault",
+    "pg_catalog", "information_schema", "graphql_public", "neon_auth",
+})
+
+
+def musix_runtime_schema() -> str | None:
+    name = (os.getenv("MUSIX_DB_SCHEMA") or "").strip()
+    if not name:
+        return None
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name) or name in _RESERVED_SCHEMAS or name.startswith("pg_"):
+        raise ValueError("MUSIX_DB_SCHEMA must be a safe dedicated schema name, not a Supabase system/public schema.")
+    return name
