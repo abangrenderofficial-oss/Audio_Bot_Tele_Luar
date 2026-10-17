@@ -370,6 +370,14 @@ async def redirect_music_inline_to_private(query: types.InlineQuery) -> None:
     )
 
 
+def _youtube_fast_worker_enabled() -> bool:
+    # Disabling only the *first* fast-worker attempt leaves cache, local
+    # yt-dlp, and the existing conversion path intact.
+    return (os.getenv("MUSIX_YOUTUBE_FAST_WORKER_ENABLED") or "1").strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+
+
 def _friendly_music_error(exc: Exception) -> str:
     raw = str(exc)
     lower = raw.lower()
@@ -403,6 +411,14 @@ def _friendly_music_error(exc: Exception) -> str:
         return (
             "YouTube sedang challenge/block request server untuk video ini. "
             "Cuba link yang sama kemudian atau guna source lain buat sementara."
+        )
+    if (
+        ("[youtube]" in lower or "local youtube" in lower)
+        and ("sign in" in lower or "login_required" in lower)
+    ):
+        return (
+            "YouTube sedang menyekat permintaan server untuk video awam ini. "
+            "Bot belum dapat mengambil audio; cuba semula kemudian."
         )
     if (
         "private" in lower
@@ -855,7 +871,7 @@ async def process_music_link(
                     )
                     return
 
-        if service_name == "youtube":
+        if service_name == "youtube" and _youtube_fast_worker_enabled():
             video_id, shared_fast_future, is_fast_leader = (
                 await _claim_fast_youtube_inflight(source_url)
             )
