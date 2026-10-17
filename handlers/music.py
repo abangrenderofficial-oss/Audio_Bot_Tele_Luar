@@ -388,6 +388,11 @@ def _friendly_music_error(exc: Exception) -> str:
         )
     if "live_stream_not_supported" in lower:
         return "Live stream belum disokong. Hantar link video yang sudah siap/published."
+    if "service suspended" in lower or "youtube worker returned http 503" in lower:
+        return (
+            "Servis sokongan YouTube sedang tidak tersedia. Bot cuba sumber lain "
+            "tetapi audio belum boleh diambil sekarang. Cuba sebentar lagi."
+        )
     if (
         "confirm you're not a bot" in lower
         or "confirm you’re not a bot" in lower
