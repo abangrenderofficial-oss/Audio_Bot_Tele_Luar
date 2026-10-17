@@ -13,7 +13,7 @@ if BASE_DIR not in sys.path:
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 from services.storage.db import Base  # noqa: E402
-from services.storage.database_url import resolve_alembic_database_url  # noqa: E402
+from services.storage.database_url import musix_runtime_schema, resolve_alembic_database_url  # noqa: E402
 
 
 config = context.config
@@ -50,10 +50,14 @@ def run_migrations_offline():
 
 
 def run_migrations_online():
+    # Pin migrations and alembic_version to the SAME isolated schema as async bot operations.
+    # Connection-time search_path is used because PostgreSQL DDL is transaction-scoped.
+    runtime_schema = config.attributes.get("musix_runtime_schema") or musix_runtime_schema()
     connectable = engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **({"connect_args": {"options": "-csearch_path=" + runtime_schema}} if runtime_schema else {}),
     )
 
     with connectable.connect() as connection:
