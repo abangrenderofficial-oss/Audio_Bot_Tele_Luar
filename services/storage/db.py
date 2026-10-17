@@ -1,4 +1,6 @@
 import asyncio
+import ssl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -127,6 +129,32 @@ class DataBase(
         self.sync_url = to_sync_database_url(self.database_url)
         self.async_url = to_async_database_url(self.database_url)
         self.runtime_schema = musix_runtime_schema()
+        connect_args = {}
+        if self.runtime_schema:
+            connect_args["server_settings"] = {"search_path": self.runtime_schema}
+
+        # psycopg2 understands libpq sslmode/sslrootcert URL options, but asyncpg
+        # requires an SSLContext rather than receiving those query arguments.
+        parts = urlsplit(self.async_url)
+        query_items = parse_qsl(parts.query, keep_blank_values=True)
+        options = dict(query_items)
+        ssl_mode = options.get("sslmode")
+        root_cert = options.get("sslrootcert")
+        if ssl_mode:
+            if ssl_mode in {"verify-full", "verify-ca"}:
+                if not root_cert:
+                    raise ValueError("Verified PostgreSQL TLS requires sslrootcert.")
+                ssl_context = ssl.create_default_context(cafile=root_cert)
+                ssl_context.check_hostname = ssl_mode == "verify-full"
+                connect_args["ssl"] = ssl_context
+            elif ssl_mode == "require":
+                connect_args["ssl"] = True
+            elif ssl_mode == "disable":
+                connect_args["ssl"] = False
+            else:
+                raise ValueError("Unsupported PostgreSQL SSL mode: " + ssl_mode)
+            async_query = [(k, v) for k, v in query_items if k not in {"sslmode", "sslrootcert"}]
+            self.async_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(async_query), parts.fragment))
 
         self.engine = create_async_engine(
             self.async_url,
@@ -138,7 +166,7 @@ class DataBase(
             max_overflow=max(0, int(DB_MAX_OVERFLOW)),
             pool_timeout=max(1.0, float(DB_POOL_TIMEOUT)),
             pool_use_lifo=False,
-            **({"connect_args": {"server_settings": {"search_path": self.runtime_schema}}} if self.runtime_schema else {}),
+            **({"connect_args": connect_args} if connect_args else {}),
         )
         self._dialect_name = self.engine.dialect.name
         self.SessionLocal = async_sessionmaker(
